@@ -166,8 +166,11 @@ class OPENBRIDGE(asyncio.DatagramProtocol):
 
     def datagram_received(self, _packet, _sockaddr):
         if _packet[:4] == DMRD:    # DMRData -- encapsulated DMR data frame
-            _data = _packet[:53]
-            _hash = _packet[53:]
+            # With RSSI_TRAILER, a peer may send the 55-byte Homebrew body (53 + BER/RSSI)
+            # with the HMAC over all of it; a standard 53-byte frame is still accepted.
+            _body_len = 55 if (self._config['RSSI_TRAILER'] and len(_packet) == 75) else 53
+            _data = _packet[:_body_len]
+            _hash = _packet[_body_len:]
             _ckhs = hmac_new(self._config['PASSPHRASE'],_data,sha1).digest()
 
             if compare_digest(_hash, _ckhs) and _sockaddr == self._config['TARGET_SOCK']:

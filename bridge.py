@@ -372,10 +372,13 @@ class routerOBP(OPENBRIDGE):
         # Final actions - Is this a voice terminator?
         if (_frame_type == HBPF_DATA_SYNC) and (_dtype_vseq == HBPF_SLT_VTERM):
             call_duration = pkt_time - self.STATUS[_stream_id]['START']
-            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f', \
-                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration)
+            # End-of-call RSSI on the terminator's BER/RSSI trailer (RSSI_TRAILER peers
+            # only, e.g. cc2obp relaying the c-Bridge's B-off); '' when not reported.
+            _rssi = '{:.1f}'.format(-_data[54]) if len(_data) > 54 and _data[54] else ''
+            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f%s', \
+                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration, ', RSSI: {} dBm'.format(_rssi) if _rssi else '')
             if CONFIG['REPORTS']['REPORT']:
-               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration).encode(encoding='utf-8', errors='ignore'))
+               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration, ',' + _rssi if _rssi else '').encode(encoding='utf-8', errors='ignore'))
             self.STATUS[_stream_id]['ACTIVE'] = False
             logger.debug('(%s) OpenBridge sourced call stream end, remove terminated Stream ID: %s', self._system, int_id(_stream_id))
 

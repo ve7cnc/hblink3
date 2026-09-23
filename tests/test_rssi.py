@@ -110,6 +110,20 @@ class TestRssi(unittest.TestCase):
         self.assertEqual(cap[0]['type'], 'stream_update')
         self.assertEqual(cap[0]['rssi'], -99.0)
 
+    def test_obp_origin_end_reports_terminator_rssi(self):
+        # A call arriving over OpenBridge (e.g. cc2obp relaying the c-Bridge): the
+        # end-of-call RSSI rides the terminator's trailer.
+        obp = bridge.systems['OBP-1']
+        def frame(ft, dv, rssi, seq):
+            data = mk_dmrd(seq, SRC, TG, PEER, 1, 'group', ft, dv, SID)[:54] + bytes([rssi])
+            obp.dmrd_received(PEER, SRC, TG, seq, 1, 'group', ft, dv, SID, data)
+        frame(_FT_DATA_SYNC, _VHEAD, 0, 0)
+        frame(_FT_VOICE, 0, 0, 1)
+        frame(_FT_DATA_SYNC, _VTERM, 108, 2)
+        end = [e for e in self.events if e.startswith('GROUP VOICE,END,RX,OBP-1,')]
+        self.assertEqual(len(end), 1, self.events)
+        self.assertTrue(end[0].endswith(',-108.0'), end[0])
+
     def test_obp_without_trailer_sends_53_bytes(self):
         self._call([99, 99])
         pkts = self.w.emitted_to('OBP-1')
@@ -126,3 +140,42 @@ class TestRssi(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestObpReceiveTrailer(unittest.TestCase):
+    """OPENBRIDGE.datagram_received accepts the 55-byte body (75-byte packet) only
+    when RSSI_TRAILER is set; the standard 73-byte packet is always accepted."""
+
+    def _obp(self, trailer):
+        import copy, hblink, config
+        cfg = config.build_config(os.path.join(_HERE, 'harness.cfg'))
+        cfg['SYSTEMS']['OBP-1']['RSSI_TRAILER'] = trailer
+        obp = hblink.OPENBRIDGE('OBP-1', cfg, None)
+        got = []
+        obp.dmrd_received = lambda *a: got.append(a[-1])
+        return obp, cfg['SYSTEMS']['OBP-1'], got
+
+    def _pkt(self, sysconf, body):
+        from hmac import new as hmac_new
+        from hashlib import sha1
+        return body + hmac_new(sysconf['PASSPHRASE'], body, sha1).digest()
+
+    def test_75_byte_accepted_with_trailer(self):
+        obp, sc, got = self._obp(True)
+        body = mk_dmrd(0, SRC, TG, PEER, 1, 'group', _FT_DATA_SYNC, _VTERM, SID)[:54] + bytes([108])
+        obp.datagram_received(self._pkt(sc, body), sc['TARGET_SOCK'])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(len(got[0]), 55)
+        self.assertEqual(got[0][54], 108)
+
+    def test_73_byte_still_accepted_with_trailer(self):
+        obp, sc, got = self._obp(True)
+        body = mk_dmrd(0, SRC, TG, PEER, 1, 'group', _FT_DATA_SYNC, _VTERM, SID)[:53]
+        obp.datagram_received(self._pkt(sc, body), sc['TARGET_SOCK'])
+        self.assertEqual([len(d) for d in got], [53])
+
+    def test_75_byte_rejected_without_trailer(self):
+        obp, sc, got = self._obp(False)
+        body = mk_dmrd(0, SRC, TG, PEER, 1, 'group', _FT_DATA_SYNC, _VTERM, SID)[:54] + bytes([108])
+        obp.datagram_received(self._pkt(sc, body), sc['TARGET_SOCK'])
+        self.assertEqual(got, [])     # HMAC is checked over 53 bytes, so it fails
