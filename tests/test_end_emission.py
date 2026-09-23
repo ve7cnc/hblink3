@@ -122,6 +122,47 @@ class TestGroupEnd(unittest.TestCase):
         self.assertEqual(len(_ends(rpt)), 1)          # exactly one, not two
 
 
+class TestOpenBridgeEnd(unittest.TestCase):
+    """OpenBridge-sourced calls: the terminator emits the END; the stream trimmer
+    must only emit one for a stream that never got its terminator. It used to emit
+    a second END for every terminated stream too, which clobbered the first (and
+    any RSSI it carried) on the dashboard."""
+
+    def _world(self):
+        w = harness.World({'B': [_member('OBP-1', 1, 3100), _member('SERVER-1', 1, 3100)]})
+        w.CONFIG['REPORTS']['REPORT'] = True
+        rpt = _Report()
+        for sysobj in bridge.systems.values():
+            sysobj._report = rpt
+        return w, rpt
+
+    def _obp_ends(self, rpt):
+        return [e for e in _ends(rpt) if ',OBP-1,' in e]
+
+    def test_clean_obp_call_emits_one_end(self):
+        w, rpt = self._world()
+        sid = b'\x00\x00\x01\x01'
+        w.feed_group_header('OBP-1', stream_id=sid, **_KW)
+        for burst in range(6):
+            w.feed_group_burst('OBP-1', burst, stream_id=sid, **_KW)
+        w.feed_group_terminator('OBP-1', stream_id=sid, **_KW)
+        self.assertEqual(len(self._obp_ends(rpt)), 1)
+        w.clock.tick(bridge.STREAM_TIMEOUT + 1)
+        bridge.stream_trimmer_loop()
+        self.assertEqual(len(self._obp_ends(rpt)), 1)   # exactly one, not two
+
+    def test_lost_tail_obp_call_times_out_with_end(self):
+        w, rpt = self._world()
+        sid = b'\x00\x00\x01\x02'
+        w.feed_group_header('OBP-1', stream_id=sid, **_KW)
+        for burst in (0, 1, 2):                          # no terminator
+            w.feed_group_burst('OBP-1', burst, stream_id=sid, **_KW)
+        self.assertEqual(self._obp_ends(rpt), [])
+        w.clock.tick(bridge.STREAM_TIMEOUT + 1)
+        bridge.stream_trimmer_loop()
+        self.assertEqual(len(self._obp_ends(rpt)), 1)
+
+
 class TestCollisionLogging(unittest.TestCase):
 
     def test_collision_logged_once_per_stream(self):

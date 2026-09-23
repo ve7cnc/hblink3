@@ -297,10 +297,13 @@ def stream_trimmer_loop():
                 if stream_id in systems[system].STATUS:
                     _stream = systems[system].STATUS[stream_id]
                     _sysconfig = CONFIG['SYSTEMS'][system]
+                    # Only a stream that never saw its terminator (still ACTIVE) timed out
+                    # and needs an END here; a terminated one already reported its END
+                    # (with any RSSI) when the terminator arrived.
                     if systems[system].STATUS[stream_id]['ACTIVE']:
                         logger.info('(%s) *TIME OUT*   STREAM ID: %s SUB: %s PEER: %s TYPE: %s DST ID: %s TS 1 Duration: %.2f', \
                         system, int_id(stream_id), get_alias(int_id(_stream['RFS']), subscriber_ids), get_alias(int_id(_stream.get('PEER', _sysconfig['NETWORK_ID'])), peer_ids), _stream['TYPE'], get_alias(int_id(_stream['DST']), talkgroup_ids), _stream['LAST'] - _stream['START'])
-                    if CONFIG['REPORTS']['REPORT']:
+                        if CONFIG['REPORTS']['REPORT']:
                             if _stream['TYPE'] == 'GROUP':
                                 systems[system]._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}'.format(system, int_id(stream_id), int_id(_stream.get('PEER', _sysconfig['NETWORK_ID'])), int_id(_stream['RFS']), 1, int_id(_stream['DST']), _stream['LAST'] - _stream['START']).encode(encoding='utf-8', errors='ignore'))
                             elif _stream['TYPE'] == 'UNIT':
