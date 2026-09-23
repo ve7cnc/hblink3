@@ -259,8 +259,11 @@ function logRow(e){
   const cls=e.action==='START'?'start':'end';
   const d=e.duration!=null?(' · '+e.duration.toFixed(1)+'s'):'';
   const r=(e.action==='END'&&e.rssi!=null)?(' · '+e.rssi.toFixed(1)+' dBm'):'';   // END: call average
+  // Source repeater, when the system name doesn't already identify it -- e.g. a call
+  // arriving over OpenBridge from a far repeater (system BCTRBO-CBRIDGE, peer AF7PR).
+  const p=(e.peer!=null&&String(e.system).indexOf(String(e.peer))<0)?(' ('+idName(e.peer_alias,e.peer)+')'):'';
   return '<div><span class="ts">'+t+'</span> <span class="'+cls+'">'+callShort(e.call_type)+' '+e.action+'</span> · '+
-         esc(e.system)+' · '+idName(e.src_alias,e.src)+' TS'+e.slot+' → '+idName(e.dst_alias,e.dst)+d+r+'</div>';
+         esc(e.system)+p+' · '+idName(e.src_alias,e.src)+' TS'+e.slot+' → '+idName(e.dst_alias,e.dst)+d+r+'</div>';
 }
 function renderLog(){ el('log').innerHTML = ST.log.map(logRow).join(''); }
 
