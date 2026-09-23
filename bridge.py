@@ -586,6 +586,9 @@ class routerHBP(HBSYSTEM):
                 # the current RX stream, for the call-end report.
                 'RX_RSSI_SUM':  0,
                 'RX_RSSI_N':    0,
+                # Last RSSI byte sent in a live UPDATE event, and when.
+                'RX_RSSI_LAST': 0,
+                'RX_RSSI_SENT': 0.0,
                 'RX_LC':        b'\x00',
                 'TX_H_LC':      b'\x00',
                 'TX_T_LC':      b'\x00',
@@ -626,6 +629,9 @@ class routerHBP(HBSYSTEM):
                 # the current RX stream, for the call-end report.
                 'RX_RSSI_SUM':  0,
                 'RX_RSSI_N':    0,
+                # Last RSSI byte sent in a live UPDATE event, and when.
+                'RX_RSSI_LAST': 0,
+                'RX_RSSI_SENT': 0.0,
                 'RX_LC':        b'\x00',
                 'TX_H_LC':      b'\x00',
                 'TX_T_LC':      b'\x00',
@@ -695,6 +701,8 @@ class routerHBP(HBSYSTEM):
             self.STATUS[_slot]['RX_CT'] = 'GROUP VOICE'
             self.STATUS[_slot]['RX_RSSI_SUM'] = 0
             self.STATUS[_slot]['RX_RSSI_N'] = 0
+            self.STATUS[_slot]['RX_RSSI_LAST'] = 0
+            self.STATUS[_slot]['RX_RSSI_SENT'] = 0.0
             logger.info('(%s) *GROUP CALL START* STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s', \
                     self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot)
             if CONFIG['REPORTS']['REPORT']:
@@ -732,8 +740,16 @@ class routerHBP(HBSYSTEM):
 
         # RSSI byte of the HBP BER/RSSI trailer (-dBm; 0 = not reported)
         if len(_data) > 54 and _data[54]:
-            self.STATUS[_slot]['RX_RSSI_SUM'] += _data[54]
-            self.STATUS[_slot]['RX_RSSI_N'] += 1
+            _st = self.STATUS[_slot]
+            _st['RX_RSSI_SUM'] += _data[54]
+            _st['RX_RSSI_N'] += 1
+            # Live reading for the dashboard: report a changed value, at most once
+            # per RSSI_UPDATE_SECS (MOTOTRBO repeaters report roughly every second).
+            if (CONFIG['REPORTS']['REPORT'] and _data[54] != _st['RX_RSSI_LAST']
+                    and pkt_time - _st['RX_RSSI_SENT'] >= RSSI_UPDATE_SECS):
+                _st['RX_RSSI_LAST'] = _data[54]
+                _st['RX_RSSI_SENT'] = pkt_time
+                self._report.send_bridge_event('GROUP VOICE,UPDATE,RX,{},{},{},{},{},{},{:.2f},{:.1f}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), pkt_time - _st['RX_START'], -_data[54]).encode(encoding='utf-8', errors='ignore'))
 
         # Hand each active target the frame; the target system applies its own
         # admission/contention policy and egress framing (see bridge_group).
@@ -1036,6 +1052,7 @@ class BridgeReportServer(ReportServer):
     def send_bridge_event(self, _data):
         # Call sites pass a CSV string; convert to a JSON stream event.
         # CSV: call_type,action,trx,system,stream_id,peer,src,slot,dst[,duration[,rssi]]
+        # action START/END, or UPDATE: a live mid-call reading (rssi = latest, dBm)
         if isinstance(_data, (bytes, bytearray)):
             _data = _data.decode('utf-8', errors='ignore')
         p = _data.split(',')
@@ -1044,7 +1061,7 @@ class BridgeReportServer(ReportServer):
                 # Canonical vocabulary: 'stream_start' / 'stream_end'. The 'action'
                 # field is retained (START/END) -- the dashboard uses it for the
                 # log label and hang-time handling.
-                'type':      'stream_start' if p[1] == 'START' else 'stream_end',
+                'type':      {'START': 'stream_start', 'UPDATE': 'stream_update'}.get(p[1], 'stream_end'),
                 'call_type': p[0],
                 'action':    p[1],
                 'trx':       p[2],

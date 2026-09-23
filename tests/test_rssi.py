@@ -82,6 +82,34 @@ class TestRssi(unittest.TestCase):
         srv.send_bridge_event('GROUP VOICE,END,RX,SERVER-1,1,2,3,1,3100,4.20')
         self.assertNotIn('rssi', cap[1])
 
+    def _updates(self):
+        return [e for e in self.events if e.startswith('GROUP VOICE,UPDATE,RX,SERVER-1,')]
+
+    def test_live_update_on_change_rate_limited(self):
+        self._frame(_FT_DATA_SYNC, _VHEAD, 0)
+        self._frame(_FT_VOICE, 0, 99, seq=1)       # first reading -> update
+        self._frame(_FT_VOICE, 1, 99, seq=2)       # unchanged -> none
+        self._frame(_FT_VOICE, 2, 101, seq=3)      # changed, but < 1 s later -> none
+        self.w.clock.tick(1.1)
+        self._frame(_FT_VOICE, 3, 101, seq=4)      # changed vs last sent, >= 1 s -> update
+        self._frame(_FT_VOICE, 4, 101, seq=5)      # unchanged -> none
+        ups = self._updates()
+        self.assertEqual(len(ups), 2, ups)
+        self.assertTrue(ups[0].endswith(',-99.0'), ups[0])
+        self.assertTrue(ups[1].endswith(',-101.0'), ups[1])
+
+    def test_no_live_update_without_rssi(self):
+        self._call([0, 0, 0])
+        self.assertEqual(self._updates(), [])
+
+    def test_update_csv_becomes_stream_update(self):
+        srv = bridge.BridgeReportServer({})
+        cap = []
+        srv._send_json = cap.append
+        srv.send_bridge_event('GROUP VOICE,UPDATE,RX,SERVER-1,1,2,3,1,3100,2.16,-99.0')
+        self.assertEqual(cap[0]['type'], 'stream_update')
+        self.assertEqual(cap[0]['rssi'], -99.0)
+
     def test_obp_without_trailer_sends_53_bytes(self):
         self._call([99, 99])
         pkts = self.w.emitted_to('OBP-1')

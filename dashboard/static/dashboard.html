@@ -122,7 +122,8 @@ function callCell(e, klass, hang){
   const d='<span class="js-dur" data-start="'+e._arrived+'">'+dur((Date.now()-e._arrived)/1000)+'</span>';
   return '<div class="call '+klass+'">'
        + '<div class="call-top">'+src+' → '+dst+'</div>'
-       + '<div class="sub mono">'+esc(e.trx)+' · '+callShort(e.call_type)+' · '+e.src+' · '+d+'</div>'
+       + '<div class="sub mono">'+esc(e.trx)+' · '+callShort(e.call_type)+' · '+e.src+' · '+d
+       + (e.rssi!=null?' · '+e.rssi.toFixed(0)+' dBm':'')+'</div>'
        + '</div>';
 }
 
@@ -257,7 +258,7 @@ function logRow(e){
   const t=new Date(e._arrived||Date.now()).toLocaleTimeString();
   const cls=e.action==='START'?'start':'end';
   const d=e.duration!=null?(' · '+e.duration.toFixed(1)+'s'):'';
-  const r=e.rssi!=null?(' · '+e.rssi.toFixed(1)+' dBm'):'';
+  const r=(e.action==='END'&&e.rssi!=null)?(' · '+e.rssi.toFixed(1)+' dBm'):'';   // END: call average
   return '<div><span class="ts">'+t+'</span> <span class="'+cls+'">'+callShort(e.call_type)+' '+e.action+'</span> · '+
          esc(e.system)+' · '+idName(e.src_alias,e.src)+' TS'+e.slot+' → '+idName(e.dst_alias,e.dst)+d+r+'</div>';
 }
@@ -353,6 +354,16 @@ setInterval(()=>{
 function setConn(up){ ST.hblink=up; const c=el('conn'); c.className='badge '+(up?'up':'down'); c.textContent='HBlink: '+(up?'connected':'disconnected'); }
 function renderAll(){ renderServers(); renderOutbounds(); renderOpenbridges(); renderBridges(); renderLog(); renderLastHeard(); }
 
+// Live mid-call reading: update the active stream in place. The same object sits in
+// ST.log (applyStream pushes it to both), so Last Heard picks it up too.
+function applyStreamUpdate(u){
+  const e=ST.active[skey(u)]; if(!e) return;
+  e.rssi=u.rssi;
+  const sys=ST.systems[e.system];
+  if(sys&&sys.MODE==='OUTBOUND') renderOutbounds(); else renderServers();
+  renderLastHeard();
+}
+
 function applyStream(e){
   e._arrived = e._arrived || Date.now();
   const hkey = e.system+'|'+e.slot;
@@ -388,6 +399,7 @@ function connect(){
       renderServers(); renderOutbounds(); renderOpenbridges(); }
     else if(m.type==='bridges'){ ST.bridges=m.bridges||{}; renderBridges(); }
     else if(m.type==='stream_start'||m.type==='stream_end'){ applyStream(m); }
+    else if(m.type==='stream_update'){ applyStreamUpdate(m); }
   };
   sock.onclose=()=>{ setConn(false); el('conn').textContent='HBlink: dashboard offline'; setTimeout(connect,2000); };
 }

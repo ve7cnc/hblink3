@@ -278,6 +278,13 @@ async def handle_event(evt):
     elif t == 'bridges':
         STATE.bridges = enrich_bridges(evt['bridges'])
         await broadcast({'type': 'bridges', 'bridges': STATE.bridges})
+    elif t == 'stream_update':
+        # Live mid-call reading (RSSI). Keep the stored START current so a browser
+        # that connects mid-call gets it; not logged -- the END carries the average.
+        cur = STATE.streams.get(stream_key(evt))
+        if cur is not None:
+            cur['rssi'] = evt.get('rssi')
+            await broadcast(evt)
     elif t in ('stream_start', 'stream_end'):
         enrich_stream(evt)
         evt['_ts'] = time.time()   # authoritative server time so "Last Heard" age is correct across reloads

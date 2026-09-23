@@ -42,6 +42,10 @@ STREAM_TO = .360
 # long means sync is lost and any resumption is a new stream (late entry), so the
 # stream is over -- we time it out and emit an END.
 STREAM_TIMEOUT = 2
+# Minimum seconds between live mid-call RSSI reports to the dashboard. MOTOTRBO
+# repeaters take a reading every 1.08 s (every third superframe), so this only
+# guards against a source that changes the RSSI byte on every 60 ms burst.
+RSSI_UPDATE_SECS = 1.0
 
 # Options from the LC - used for late entry
 LC_OPT = b'\x00\x00\x20'
