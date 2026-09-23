@@ -257,8 +257,9 @@ function logRow(e){
   const t=new Date(e._arrived||Date.now()).toLocaleTimeString();
   const cls=e.action==='START'?'start':'end';
   const d=e.duration!=null?(' · '+e.duration.toFixed(1)+'s'):'';
+  const r=e.rssi!=null?(' · '+e.rssi.toFixed(1)+' dBm'):'';
   return '<div><span class="ts">'+t+'</span> <span class="'+cls+'">'+callShort(e.call_type)+' '+e.action+'</span> · '+
-         esc(e.system)+' · '+idName(e.src_alias,e.src)+' TS'+e.slot+' → '+idName(e.dst_alias,e.dst)+d+'</div>';
+         esc(e.system)+' · '+idName(e.src_alias,e.src)+' TS'+e.slot+' → '+idName(e.dst_alias,e.dst)+d+r+'</div>';
 }
 function renderLog(){ el('log').innerHTML = ST.log.map(logRow).join(''); }
 
@@ -277,7 +278,7 @@ function renderLastHeard(){
     if(rows.length >= LAST_HEARD_COUNT) break;
   }
   if(!rows.length){ box.innerHTML = '<div class="empty">'+(lastHeardCollapsed?'No active calls':'No calls heard yet')+'</div>'; return; }
-  let h = '<table><tr><th>User</th><th>Type</th><th>Source</th><th>TS</th><th>Talkgroup</th><th>When</th></tr>';
+  let h = '<table><tr><th>User</th><th>Type</th><th>Source</th><th>TS</th><th>Talkgroup</th><th>RSSI</th><th>When</th></tr>';
   for(const e of rows){
     const src = e.peer!=null ? idName(e.peer_alias, e.peer) : esc(e.system||'');
     const t = e._ts ? e._ts*1000 : (e._arrived||Date.now());
@@ -289,6 +290,7 @@ function renderLastHeard(){
        + '<td class="mono sub">'+src+'</td>'
        + '<td class="mono">TS'+esc(e.slot||'?')+'</td>'
        + '<td>'+idName(e.dst_alias,e.dst)+'</td>'
+       + '<td class="mono sub">'+(e.rssi!=null?e.rssi.toFixed(1)+' dBm':'')+'</td>'
        + '<td>'+when+'</td></tr>';
   }
   box.innerHTML = h+'</table>';

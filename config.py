@@ -257,6 +257,7 @@ def build_config(_config_file):
                         'TARGET_PORT': config.getint(section, 'TARGET_PORT'),
                         'BOTH_SLOTS': config.getboolean(section, 'BOTH_SLOTS'),
                         'PRESERVE_SOURCE_PEER': config.getboolean(section, 'PRESERVE_SOURCE_PEER', fallback=False),
+                        'RSSI_TRAILER': config.getboolean(section, 'RSSI_TRAILER', fallback=False),
                         'USE_ACL': config.getboolean(section, 'USE_ACL'),
                         'SUB_ACL': config.get(section, 'SUB_ACL'),
                         'TG1_ACL': config.get(section, 'TGID_ACL'),

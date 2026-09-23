@@ -390,7 +390,9 @@ class routerOBP(OPENBRIDGE):
 
     # Forward a bridged group frame INTO this OpenBridge (this system is the
     # target). OpenBridge carries unlimited concurrent streams (keyed by stream
-    # id), is effectively TS1, and carries no BER/RSSI trailer.
+    # id), is effectively TS1, and carries no BER/RSSI trailer -- unless this
+    # system sets RSSI_TRAILER, a private extension for peers that expect the
+    # Homebrew 55-byte body (e.g. cc2obp, which forwards RSSI to a c-Bridge).
     def bridge_group(self, _src, _bridge, _target, _src_ts, _src_lc, _ber_rssi,
                      _peer_id, _rf_src, _dst_id, _stream_id, _slot,
                      _frame_type, _dtype_vseq, _data, _pkt_time):
@@ -426,6 +428,8 @@ class routerOBP(OPENBRIDGE):
             _target_status[_stream_id]['ACTIVE'] = False
             self._report.send_bridge_event('GROUP VOICE,END,TX,{},{},{},{},{},{},{:.2f}'.format(_target['SYSTEM'], int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _target['TS'], int_id(_target['TGID']), call_duration).encode(encoding='utf-8', errors='ignore'))
         _tmp_data = b''.join([_tmp_data, _dmrpkt])
+        if self._config['RSSI_TRAILER']:
+            _tmp_data = b''.join([_tmp_data, _ber_rssi if len(_ber_rssi) == 2 else b'\x00\x00'])
         self.send_system(_tmp_data)
         # Drop the target stream on the terminator (the trimmer also cleans up)
         if _frame_type == HBPF_DATA_SYNC and _dtype_vseq == HBPF_SLT_VTERM and _stream_id in _target_status:
@@ -578,6 +582,10 @@ class routerHBP(HBSYSTEM):
                 # stream is reported once -- not once per colliding frame.
                 'RX_COLLISION_SID': b'\x00',
                 'RX_CT':        'GROUP VOICE',
+                # Sum/count of the HBP RSSI byte (-dBm; 0 = not reported) over
+                # the current RX stream, for the call-end report.
+                'RX_RSSI_SUM':  0,
+                'RX_RSSI_N':    0,
                 'RX_LC':        b'\x00',
                 'TX_H_LC':      b'\x00',
                 'TX_T_LC':      b'\x00',
@@ -614,6 +622,10 @@ class routerHBP(HBSYSTEM):
                 # stream is reported once -- not once per colliding frame.
                 'RX_COLLISION_SID': b'\x00',
                 'RX_CT':        'GROUP VOICE',
+                # Sum/count of the HBP RSSI byte (-dBm; 0 = not reported) over
+                # the current RX stream, for the call-end report.
+                'RX_RSSI_SUM':  0,
+                'RX_RSSI_N':    0,
                 'RX_LC':        b'\x00',
                 'TX_H_LC':      b'\x00',
                 'TX_T_LC':      b'\x00',
@@ -638,10 +650,23 @@ class routerHBP(HBSYSTEM):
         st['RX_TERMINATED'] = True
         if CONFIG['REPORTS']['REPORT'] and self._report:
             duration = st['RX_TIME'] - st['RX_START']
-            self._report.send_bridge_event('{},END,RX,{},{},{},{},{},{},{:.2f}'.format(
+            self._report.send_bridge_event('{},END,RX,{},{},{},{},{},{},{:.2f}{}'.format(
                 st.get('RX_CT', 'GROUP VOICE'), self._system, int_id(st['RX_STREAM_ID']),
                 int_id(st['RX_PEER']), int_id(st['RX_RFS']), _slot, int_id(st['RX_TGID']),
-                duration).encode(encoding='utf-8', errors='ignore'))
+                duration, self._rx_rssi_field(_slot)).encode(encoding='utf-8', errors='ignore'))
+
+    # Average RX RSSI (dBm, one decimal) of the slot's current stream, or '' if
+    # the source never reported one (the HBP RSSI byte was always 0).
+    def _rx_rssi(self, _slot):
+        st = self.STATUS[_slot]
+        if not st['RX_RSSI_N']:
+            return ''
+        return '{:.1f}'.format(-st['RX_RSSI_SUM'] / st['RX_RSSI_N'])
+
+    # Optional trailing CSV field for an END report: ',<rssi>' or nothing.
+    def _rx_rssi_field(self, _slot):
+        _rssi = self._rx_rssi(_slot)
+        return ',' + _rssi if _rssi else ''
 
 
     def group_received(self, _peer_id, _rf_src, _dst_id, _seq, _slot, _frame_type, _dtype_vseq, _stream_id, _data):
@@ -668,6 +693,8 @@ class routerHBP(HBSYSTEM):
             self.STATUS[_slot]['RX_START'] = pkt_time
             self.STATUS[_slot]['RX_TERMINATED'] = False
             self.STATUS[_slot]['RX_CT'] = 'GROUP VOICE'
+            self.STATUS[_slot]['RX_RSSI_SUM'] = 0
+            self.STATUS[_slot]['RX_RSSI_N'] = 0
             logger.info('(%s) *GROUP CALL START* STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s', \
                     self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot)
             if CONFIG['REPORTS']['REPORT']:
@@ -703,6 +730,11 @@ class routerHBP(HBSYSTEM):
             if _bridge_state_changed and CONFIG['REPORTS']['REPORT'] and report_server:
                 report_server.send_bridge()
 
+        # RSSI byte of the HBP BER/RSSI trailer (-dBm; 0 = not reported)
+        if len(_data) > 54 and _data[54]:
+            self.STATUS[_slot]['RX_RSSI_SUM'] += _data[54]
+            self.STATUS[_slot]['RX_RSSI_N'] += 1
+
         # Hand each active target the frame; the target system applies its own
         # admission/contention policy and egress framing (see bridge_group).
         _src_lc = self.STATUS[_slot]['RX_LC']
@@ -720,10 +752,11 @@ class routerHBP(HBSYSTEM):
         if (_frame_type == HBPF_DATA_SYNC) and (_dtype_vseq == HBPF_SLT_VTERM) and (not self.STATUS[_slot]['RX_TERMINATED']):
             self.STATUS[_slot]['RX_TERMINATED'] = True
             call_duration = pkt_time - self.STATUS[_slot]['RX_START']
-            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f', \
-                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration)
+            _rssi = self._rx_rssi(_slot)
+            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f%s', \
+                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration, ', RSSI: {} dBm'.format(_rssi) if _rssi else '')
             if CONFIG['REPORTS']['REPORT']:
-               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration).encode(encoding='utf-8', errors='ignore'))
+               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration, self._rx_rssi_field(_slot)).encode(encoding='utf-8', errors='ignore'))
 
             #
             # Begin in-band signalling for call end. This has nothign to do with routing traffic directly.
@@ -1002,7 +1035,7 @@ class BridgeReportServer(ReportServer):
 
     def send_bridge_event(self, _data):
         # Call sites pass a CSV string; convert to a JSON stream event.
-        # CSV: call_type,action,trx,system,stream_id,peer,src,slot,dst[,duration]
+        # CSV: call_type,action,trx,system,stream_id,peer,src,slot,dst[,duration[,rssi]]
         if isinstance(_data, (bytes, bytearray)):
             _data = _data.decode('utf-8', errors='ignore')
         p = _data.split(',')
@@ -1024,6 +1057,8 @@ class BridgeReportServer(ReportServer):
             }
             if len(p) > 9:
                 event['duration'] = float(p[9])
+            if len(p) > 10 and p[10]:
+                event['rssi'] = float(p[10])     # average RX RSSI, dBm
         except (IndexError, ValueError):
             logger.error('(REPORT) malformed bridge event: %s', _data)
             return
