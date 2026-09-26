@@ -78,6 +78,16 @@ def config_logging(_logger):
                 'formatter': 'timed',
                 'filename': _logger['LOG_FILE'],
             },
+            # Like file-timed, but rotated at midnight (the host's local time; UTC in a
+            # container), keeping LOG_KEEP_DAYS old files as LOG_FILE.YYYY-MM-DD.
+            'file-daily': {
+                'class': 'logging.handlers.TimedRotatingFileHandler',
+                'formatter': 'timed',
+                'filename': _logger['LOG_FILE'],
+                'when': 'midnight',
+                'backupCount': _logger.get('LOG_KEEP_DAYS', 30),
+                'delay': True,
+            },
             'syslog': {
                 'class': 'logging.handlers.SysLogHandler',
                 'formatter': 'syslog',

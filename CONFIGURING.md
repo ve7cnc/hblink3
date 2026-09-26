@@ -64,7 +64,8 @@ Feeds the real-time dashboard. See [`dashboard/`](dashboard/).
 | Field | Meaning |
 |---|---|
 | `LOG_FILE` | Path to the log file. Empty ⇒ `/dev/null`. |
-| `LOG_HANDLERS` | Handler set, e.g. `console-timed`, `file-timed`, or both comma-joined. |
+| `LOG_HANDLERS` | Handler set, e.g. `console-timed`, `file-timed`, or both comma-joined. `file-daily` is `file-timed` rotated at midnight (local time; UTC in a container). |
+| `LOG_KEEP_DAYS` | With `file-daily`: how many rotated days to keep (`LOG_FILE.YYYY-MM-DD`). Default `30`. |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `LOG_NAME` | Name tag prefixed to log lines. |
 

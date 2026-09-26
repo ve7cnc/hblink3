@@ -163,7 +163,8 @@ def build_config(_config_file):
                     'LOG_FILE': config.get(section, 'LOG_FILE'),
                     'LOG_HANDLERS': config.get(section, 'LOG_HANDLERS'),
                     'LOG_LEVEL': config.get(section, 'LOG_LEVEL'),
-                    'LOG_NAME': config.get(section, 'LOG_NAME')
+                    'LOG_NAME': config.get(section, 'LOG_NAME'),
+                    'LOG_KEEP_DAYS': config.getint(section, 'LOG_KEEP_DAYS', fallback=30)
                 })
                 if not CONFIG['LOGGER']['LOG_FILE']:
                     CONFIG['LOGGER']['LOG_FILE'] = '/dev/null'
