@@ -194,48 +194,46 @@ class State:
 STATE = State()
 
 
-# ---- loss summary: per source repeater and per talkgroup, in memory ----
-# Built from RX call ENDs that carry a loss figure, over a rolling window. Resets
-# when the dashboard restarts (long-term metrics are a separate, future dashboard).
+# ---- loss summary: per system and per repeater, in memory ----
+# Built from RX call ENDs that carry a loss figure, over a rolling window, and shown
+# on the Server / Outbound / OpenBridge system tables. Resets when the dashboard
+# restarts (long-term metrics are a separate, future dashboard).
 LOSS_WINDOW_SECS = 24 * 3600
 
 class LossSummary:
     def __init__(self):
-        self.calls = deque()   # (time, peer, peer_alias, dst, dst_alias, loss %, duration s)
+        self.calls = deque()   # (time, system, peer, loss %, duration s)
 
     def add(self, evt):
         dur = evt.get('duration') or 0.0
         if evt.get('loss') is None or dur <= 0:
             return
-        self.calls.append((time.time(), evt['peer'], evt.get('peer_alias', ''),
-                           evt['dst'], evt.get('dst_alias', ''), evt['loss'], dur))
+        self.calls.append((time.time(), evt['system'], evt['peer'], evt['loss'], dur))
 
     @staticmethod
-    def _group(rows, key, alias):
+    def _group(rows, keyf):
         g = {}
         for r in rows:
-            e = g.setdefault(r[key], {'id': r[key], 'alias': r[alias], 'calls': 0,
-                                      '_w': 0.0, '_d': 0.0, 'worst': 0.0, 'last': 0.0})
+            e = g.setdefault(keyf(r), {'calls': 0, '_w': 0.0, '_d': 0.0, 'worst': 0.0})
             e['calls'] += 1
-            e['_w'] += r[5] * r[6]       # duration-weighted, so short calls don't dominate
-            e['_d'] += r[6]
-            e['worst'] = max(e['worst'], r[5])
-            e['last'] = max(e['last'], r[0])
-        out = []
+            e['_w'] += r[3] * r[4]       # duration-weighted, so short calls don't dominate
+            e['_d'] += r[4]
+            e['worst'] = max(e['worst'], r[3])
         for e in g.values():
             e['avg'] = round(e.pop('_w') / e['_d'], 1) if e['_d'] else 0.0
             e.pop('_d')
-            e['last_secs'] = int(time.time() - e.pop('last'))
-            out.append(e)
-        return sorted(out, key=lambda e: (-e['avg'], -e['calls']))
+        return g
 
     def snapshot(self):
         cutoff = time.time() - LOSS_WINDOW_SECS
         while self.calls and self.calls[0][0] < cutoff:
             self.calls.popleft()
         rows = list(self.calls)
+        # systems: keyed by hblink system name (Outbound, OpenBridge)
+        # peers:   keyed "system|peer id" (each repeater of a Server system)
         return {'type': 'loss_summary', 'window_secs': LOSS_WINDOW_SECS,
-                'repeaters': self._group(rows, 1, 2), 'talkgroups': self._group(rows, 3, 4)}
+                'systems': self._group(rows, lambda r: r[1]),
+                'peers': self._group(rows, lambda r: '{}|{}'.format(r[1], r[2]))}
 
 LOSS = LossSummary()
 

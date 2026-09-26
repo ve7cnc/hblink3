@@ -45,8 +45,7 @@
   .status-ok{color:#4ade80;font-weight:600}
   .status-bad{color:#f87171;font-weight:600}
   .loss-warn{color:var(--warn)} .loss-bad{color:#f87171;font-weight:600}   /* >=1 % / >=5 % voice loss */
-  .loss-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 16px}
-  .loss-grid h3{font-size:12px;color:var(--muted);font-weight:600;margin:0 0 6px;text-transform:uppercase;letter-spacing:.04em}
+
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
   .dot.ok{background:#22c55e}.dot.bad{background:#ef4444}
   .empty{color:var(--muted);padding:10px;background:var(--panel);border-radius:8px;text-align:center}
@@ -79,7 +78,6 @@
   </header>
 
   <section id="lastHeardSection"><h2 class="lh-head"><span id="lastHeardTitle">Last Heard</span> <span id="lastHeardToggle" class="toggle-btn"><span class="caret">▾</span><span class="toggle-label">Active only</span></span></h2><div id="lastHeardBody"><div id="lastHeard"></div></div></section>
-  <section id="lossSection"><h2 class="lh-head">Loss · last 24 h <span id="lossToggle" class="toggle-btn"><span class="caret">▾</span><span class="toggle-label">Hide</span></span></h2><div id="lossBody" class="sec-body"><div id="loss"></div></div></section>
   <section id="serversSection"><h2 class="lh-head">Server Systems <span id="serversToggle" class="toggle-btn"><span class="caret">▾</span><span class="toggle-label">Hide</span></span></h2><div id="serversBody" class="sec-body"><div id="servers"></div></div></section>
   <section id="outboundsSection"><h2 class="lh-head">Outbound Systems <span id="outboundsToggle" class="toggle-btn"><span class="caret">▾</span><span class="toggle-label">Hide</span></span></h2><div id="outboundsBody" class="sec-body"><div id="outbounds"></div></div></section>
   <section id="openbridgesSection"><h2 class="lh-head">OpenBridge Systems <span id="openbridgesToggle" class="toggle-btn"><span class="caret">▾</span><span class="toggle-label">Hide</span></span></h2><div id="openbridgesBody" class="sec-body"><div id="openbridges"></div></div></section>
@@ -179,8 +177,8 @@ function renderServers(){
       +'<span class="toggle-btn srv-toggle" title="Show or hide this system’s connections"><span class="caret">'+(collapsed?'▸':'▾')+'</span>'+(collapsed?'Show Connections':'Hide Connections')+'</span></h3>'
       +'<div class="ts-hdrs"><div class="ts-hdr">TS1</div><div class="ts-hdr">TS2</div></div></div>'
       +'<div class="sys-pills"><div class="slotcol">'+sysPill(1)+'</div><div class="slotcol">'+sysPill(2)+'</div></div>';
-    h+='<table><tr><th>Repeater</th><th>Connection</th><th>Freq</th><th>Slots</th><th class="slotcol"></th><th class="slotcol"></th></tr>';
-    if(!pids.length) h+='<tr><td colspan="6" class="sub">No repeaters connected</td></tr>';
+    h+='<table><tr><th>Repeater</th><th>Connection</th><th>Freq</th><th>Slots</th><th>Voice loss · 24 h</th><th class="slotcol"></th><th class="slotcol"></th></tr>';
+    if(!pids.length) h+='<tr><td colspan="7" class="sub">No repeaters connected</td></tr>';
     for(const pid of pids){
       const p=repeaters[pid];
       const cell=(slot)=>{ const e=act[slot], hang=ST.hang[n+'|'+slot]||null;
@@ -198,6 +196,7 @@ function renderServers(){
       h+='<tr><td class="sysname"'+csStyle+'>'+idName(p.CALLSIGN,p.RADIO_ID)+'<div class="sub">'+esc(p.LOCATION||'')+lossTag+'</div></td>'+
          '<td class="mono">'+esc(p.IP)+':'+esc(p.PORT)+'<div class="sub">up <span class="js-since" data-base="'+(p.connected_secs||0)+'" data-arr="'+Date.now()+'">'+dur(p.connected_secs||0)+'</span></div></td>'+
          '<td class="mono sub">'+freq+'</td><td class="mono">'+fmtSlots(p.SLOTS)+'</td>'+
+         lossCell('peers', n+'|'+p.RADIO_ID)+
          '<td>'+cell(1)+'</td><td>'+cell(2)+'</td></tr>';
     }
     h+='</table>';
@@ -219,10 +218,11 @@ function renderOutbounds(){
     const since = st.connected_secs!=null ? '<span class="js-since" data-base="'+st.connected_secs+'" data-arr="'+Date.now()+'">'+dur(st.connected_secs)+'</span>' : '—';
     // Single-entry system: fold the name into the header row (col 1) and the
     // TS1/TS2 labels into the slot-column headers, dropping the separate sys-row.
-    h+='<table><tr><th class="sysname"'+nameStyle+'>'+esc(n)+'</th><th>Status</th><th>Slots</th><th class="slotcol">TS1</th><th class="slotcol">TS2</th></tr>';
+    h+='<table><tr><th class="sysname"'+nameStyle+'>'+esc(n)+'</th><th>Status</th><th>Slots</th><th>Voice loss · 24 h</th><th class="slotcol">TS1</th><th class="slotcol">TS2</th></tr>';
     h+='<tr><td>'+idName(s.CALLSIGN,s.RADIO_ID)+'<div class="sub">'+esc(s.LOCATION||'')+' · server '+esc(s.SERVER_IP)+':'+esc(s.SERVER_PORT)+'</div></td>'+
        '<td><span class="dot '+(up?'ok':'bad')+'"></span><span class="'+(up?'status-ok':'status-bad')+'">'+(up?'Connected':'Disconnected')+'</span><div class="sub">up '+since+'</div></td>'+
        '<td class="mono">'+fmtSlots(s.SLOTS)+'</td>'+
+       lossCell('systems', n)+
        '<td>'+callCell(act[1], act[1]&&act[1].trx==='TX'?'tx':'rx', ST.hang[n+'|1']||null)+'</td>'+
        '<td>'+callCell(act[2], act[2]&&act[2].trx==='TX'?'tx':'rx', ST.hang[n+'|2']||null)+'</td></tr>';
     h+='</table>';
@@ -233,11 +233,11 @@ function renderOutbounds(){
 function renderOpenbridges(){
   const names=Object.keys(ST.systems).filter(n=>ST.systems[n].MODE==='OPENBRIDGE');
   if(!names.length){ el('openbridges').innerHTML='<div class="empty">No OpenBridge systems</div>'; return; }
-  let h='<table><tr><th>System</th><th>Network / Target</th><th>Active Streams</th></tr>';
+  let h='<table><tr><th>System</th><th>Network / Target</th><th>Voice loss · 24 h</th><th>Active Streams</th></tr>';
   for(const n of names){
     const o=ST.systems[n], streams=activeList(n);
     const cells = streams.length ? streams.map(e=>'<span class="call '+(e.trx==='TX'?'tx':'rx')+'" style="display:inline-block;width:auto;margin:2px">'+e.trx+' · '+idName(e.src_alias,e.src)+' → '+idName(e.dst_alias,e.dst)+'</span>').join(' ') : '<span class="call idle" style="display:inline-block;width:auto">— idle —</span>';
-    h+='<tr><td class="sysname">'+esc(n)+'</td><td class="mono">ID '+esc(o.NETWORK_ID)+'<div class="sub">'+esc(o.TARGET_IP)+':'+esc(o.TARGET_PORT)+'</div></td><td>'+cells+'</td></tr>';
+    h+='<tr><td class="sysname">'+esc(n)+'</td><td class="mono">ID '+esc(o.NETWORK_ID)+'<div class="sub">'+esc(o.TARGET_IP)+':'+esc(o.TARGET_PORT)+'</div></td>'+lossCell('systems', n)+'<td>'+cells+'</td></tr>';
   }
   el('openbridges').innerHTML=h+'</table>';
 }
@@ -354,24 +354,16 @@ function initCollapse(key, bodyId, toggleId, defCollapsed){
   });
 }
 
-// ---------- loss summary ----------
-// Per source repeater and per talkgroup, from the dashboard server's in-memory
-// window (resets when the dashboard restarts). Average is weighted by call length.
-function renderLoss(){
-  const box=el('loss'); if(!box) return;
-  const L=ST.loss;
-  if(!L || (!L.repeaters.length && !L.talkgroups.length)){ box.innerHTML='<div class="empty">No calls with a loss figure yet</div>'; return; }
-  const tbl=(title, rows, names)=>{
-    let h='<div><h3>'+title+'</h3><table><tr><th>'+names+'</th><th>Calls</th><th>Avg loss</th><th>Worst</th><th>Last</th></tr>';
-    for(const r of rows){
-      h+='<tr><td>'+idName(r.alias,r.id)+'</td><td class="mono">'+r.calls+'</td>'
-        +'<td class="mono"><span class="'+lossCls(r.avg)+'">'+r.avg.toFixed(1)+'%</span></td>'
-        +'<td class="mono"><span class="'+lossCls(r.worst)+'">'+r.worst.toFixed(1)+'%</span></td>'
-        +'<td class="mono sub">'+dur(r.last_secs)+' ago</td></tr>';
-    }
-    return h+'</table></div>';
-  };
-  box.innerHTML='<div class="loss-grid">'+tbl('By source repeater', L.repeaters, 'Repeater')+tbl('By talkgroup', L.talkgroups, 'Talkgroup')+'</div>';
+// ---------- voice loss, last 24 h ----------
+// One table cell: call-length-weighted average and worst call over the dashboard
+// server's in-memory window (resets when the dashboard restarts). kind is
+// 'systems' (keyed by system name) or 'peers' (keyed "system|repeater id").
+function lossCell(kind, key){
+  const s = ST.loss && ST.loss[kind] && ST.loss[kind][key];
+  if(!s) return '<td class="mono sub" title="Voice loss, last 24 h">—</td>';
+  return '<td class="mono" title="Voice loss over '+s.calls+' call(s), last 24 h">'
+    +'avg <span class="'+lossCls(s.avg)+'">'+s.avg.toFixed(1)+'%</span>'
+    +'<div class="sub">worst <span class="'+lossCls(s.worst)+'">'+s.worst.toFixed(1)+'%</span> · '+s.calls+' call'+(s.calls==1?'':'s')+'</div></td>';
 }
 
 // ---------- live tick ----------
@@ -390,7 +382,7 @@ setInterval(()=>{
 
 // ---------- websocket ----------
 function setConn(up){ ST.hblink=up; const c=el('conn'); c.className='badge '+(up?'up':'down'); c.textContent='HBlink: '+(up?'connected':'disconnected'); }
-function renderAll(){ renderServers(); renderOutbounds(); renderOpenbridges(); renderBridges(); renderLog(); renderLastHeard(); renderLoss(); }
+function renderAll(){ renderServers(); renderOutbounds(); renderOpenbridges(); renderBridges(); renderLog(); renderLastHeard(); }
 
 // Live mid-call reading: update the active stream in place. The same object sits in
 // ST.log (applyStream pushes it to both), so Last Heard picks it up too.
@@ -439,7 +431,7 @@ function connect(){
     else if(m.type==='bridges'){ ST.bridges=m.bridges||{}; renderBridges(); }
     else if(m.type==='stream_start'||m.type==='stream_end'){ applyStream(m); }
     else if(m.type==='stream_update'){ applyStreamUpdate(m); }
-    else if(m.type==='loss_summary'){ ST.loss=m; renderLoss(); }
+    else if(m.type==='loss_summary'){ ST.loss=m; renderServers(); renderOutbounds(); renderOpenbridges(); }
   };
   sock.onclose=()=>{ setConn(false); el('conn').textContent='HBlink: dashboard offline'; setTimeout(connect,2000); };
 }
@@ -535,7 +527,6 @@ initCollapse('outbounds','outboundsBody','outboundsToggle', false);
 initCollapse('openbridges','openbridgesBody','openbridgesToggle', false);
 initCollapse('bridges','bridgesBody','bridgesToggle', false);
 initCollapse('log','logBody','logToggle', false);
-initCollapse('loss','lossBody','lossToggle', false);
 </script>
 </body>
 </html>
