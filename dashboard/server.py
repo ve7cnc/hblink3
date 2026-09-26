@@ -108,6 +108,9 @@ STREAM_STALE = 300
 def _abs(p):
     return p if os.path.isabs(p) else os.path.join(HERE, p)
 
+# RadioID record fields kept on download (users have fname; repeaters don't)
+_ID_FIELDS = ('id', 'callsign', 'fname', 'city', 'state', 'country')
+
 def _stream_id_file(url, path, json_key, countries, stale_secs):
     now = time.time()
     if os.path.isfile(path) and (os.path.getmtime(path) + stale_secs) >= now:
@@ -124,7 +127,9 @@ def _stream_id_file(url, path, json_key, countries, stale_secs):
                 if not countries or record.get('country') in countries:
                     if not first:
                         out.write(',')
-                    json.dump({'id': record['id'], 'callsign': record['callsign']}, out)
+                    # id + callsign drive the aliases; the rest is the detail line
+                    # (name, location) shown with a caller or repeater
+                    json.dump({k: record[k] for k in _ID_FIELDS if record.get(k) not in (None, '')}, out)
                     first = False
             out.write(']}')
         os.replace(tmp, path)
@@ -144,9 +149,38 @@ def _download_aliases():
     _stream_id_file(PEER_URL,       base + PEER_FILE,       'rptrs', countries, stale_secs)
     _stream_id_file(SUBSCRIBER_URL, base + SUBSCRIBER_FILE, 'users', countries, stale_secs)
 
+# One-line detail for an ID from its RadioID record: "Geoff · Richmond, British Columbia"
+# (users) or "Vancouver, British Columbia" (repeaters). Country is added only when it
+# isn't Canada. Stored as one string per ID to keep ~300k entries small in memory.
+def _detail(rec):
+    loc = [rec.get('city', ''), rec.get('state', '')]
+    if rec.get('country') and rec.get('country') != 'Canada':
+        loc.append(rec['country'])
+    loc = ', '.join(x.strip() for x in loc if x and x.strip())
+    name = (rec.get('fname') or '').strip()
+    return ' · '.join(x for x in (name, loc) if x)
+
+def _mk_detail_dict(path):
+    out = {}
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            recs = json.load(f)
+    except (OSError, ValueError):
+        return out
+    for rec in next(iter(recs.values()), []):
+        try:
+            d = _detail(rec)
+            if d:
+                out[int(rec['id'])] = d
+        except (KeyError, ValueError, TypeError):
+            pass
+    return out
+
 def _reload_aliases():
-    global PEER_IDS, SUBSCRIBER_IDS, TALKGROUP_IDS
+    global PEER_IDS, SUBSCRIBER_IDS, TALKGROUP_IDS, PEER_INFO, SUBSCRIBER_INFO
     base = _abs(PATH)
+    PEER_INFO       = _mk_detail_dict(base + PEER_FILE)
+    SUBSCRIBER_INFO = _mk_detail_dict(base + SUBSCRIBER_FILE)
     PEER_IDS       = mk_id_dict(base, PEER_FILE)
     SUBSCRIBER_IDS = mk_id_dict(base, SUBSCRIBER_FILE)
     TALKGROUP_IDS  = mk_id_dict(base, TGID_FILE)
@@ -154,12 +188,15 @@ def _reload_aliases():
         PEER_IDS.update(mk_id_dict(base, LOCAL_PEER_FILE))
     if LOCAL_SUB_FILE:
         SUBSCRIBER_IDS.update(mk_id_dict(base, LOCAL_SUB_FILE))
-    logger.info('aliases loaded: %d peers, %d subscribers, %d talkgroups',
-                len(PEER_IDS), len(SUBSCRIBER_IDS), len(TALKGROUP_IDS))
+    logger.info('aliases loaded: %d peers, %d subscribers, %d talkgroups (details: %d peers, %d subscribers)',
+                len(PEER_IDS), len(SUBSCRIBER_IDS), len(TALKGROUP_IDS),
+                len(PEER_INFO), len(SUBSCRIBER_INFO))
 
 PEER_IDS = {}
 SUBSCRIBER_IDS = {}
 TALKGROUP_IDS = {}
+PEER_INFO = {}
+SUBSCRIBER_INFO = {}
 
 async def _alias_refresh_loop():
     while True:
@@ -251,8 +288,9 @@ LOSS = LossSummary()
 # at the time of the call, so there's a durable record beyond the in-memory call log.
 # Records keep the stream-event field names, so they reload straight into the call
 # log on startup. Files are never pruned here.
-_CALL_KEYS = ('call_type', 'system', 'stream_id', 'peer', 'peer_alias', 'src', 'src_alias',
-              'slot', 'dst', 'dst_alias', 'duration', 'rssi', 'loss', 'loss_src')
+_CALL_KEYS = ('call_type', 'system', 'stream_id', 'peer', 'peer_alias', 'peer_info', 'src',
+              'src_alias', 'src_info', 'slot', 'dst', 'dst_alias', 'duration', 'rssi', 'loss',
+              'loss_src')
 
 def _call_log_path(ts):
     return os.path.join(CALL_LOG_DIR, 'calls-{}.jsonl'.format(
@@ -308,6 +346,8 @@ def stream_key(evt):
 def enrich_stream(evt):
     evt['src_alias'] = alias(evt['src'], SUBSCRIBER_IDS)
     evt['peer_alias'] = alias(evt['peer'], PEER_IDS)
+    evt['src_info'] = SUBSCRIBER_INFO.get(evt['src'])     # name · location
+    evt['peer_info'] = PEER_INFO.get(evt['peer'])         # repeater location
     # A unit call's destination is a subscriber; a group call's is a talkgroup.
     if evt.get('call_type') == 'UNIT VOICE':
         evt['dst_alias'] = alias(evt['dst'], SUBSCRIBER_IDS)

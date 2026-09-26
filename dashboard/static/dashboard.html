@@ -301,13 +301,15 @@ function renderLastHeard(){
   let h = '<table><tr><th>User</th><th>Type</th><th>Source</th><th>TS</th><th>Talkgroup</th><th>RSSI</th><th>Loss</th><th>When</th></tr>';
   for(const e of rows){
     const src = e.peer!=null ? idName(e.peer_alias, e.peer) : esc(e.system||'');
+    // RadioID detail lines, as on the c-Bridge's Call Watch: name · location / repeater location
+    const info = s => s ? '<div class="sub">'+esc(s)+'</div>' : '';
     const t = e._ts ? e._ts*1000 : (e._arrived||Date.now());
     const when = lhActiveSrc(e.src)
       ? '<span class="status-ok">Active</span>'
       : '<span class="js-lh mono" data-t="'+t+'">'+dur((Date.now()-t)/1000)+' ago</span>';
-    h += '<tr><td>'+idName(e.src_alias,e.src)+'</td>'
+    h += '<tr><td>'+idName(e.src_alias,e.src)+info(e.src_info)+'</td>'
        + '<td class="sub">'+callShort(e.call_type)+'</td>'
-       + '<td class="mono sub">'+src+'</td>'
+       + '<td class="mono sub">'+src+info(e.peer_info)+'</td>'
        + '<td class="mono">TS'+esc(e.slot||'?')+'</td>'
        + '<td>'+idName(e.dst_alias,e.dst)+'</td>'
        + '<td class="mono sub">'+(e.rssi!=null?e.rssi.toFixed(1)+' dBm':'')+'</td>'
