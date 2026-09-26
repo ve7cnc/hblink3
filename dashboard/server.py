@@ -74,6 +74,15 @@ try:
 except ImportError:
     SERVER_REPEATERS = 'open'
 
+# Talkgroup IDs never shown to browsers (e.g. emergency groups): the name still shows,
+# but the number is removed from every stream event, bridge and state snapshot sent
+# out. The call audit log on disk keeps the real ID.
+try:
+    from config import HIDE_TGIDS
+except ImportError:
+    HIDE_TGIDS = []
+_HIDE_TGIDS = set(int(t) for t in HIDE_TGIDS)
+
 # Directory for the call audit log (one JSON line per finished incoming call, in
 # daily files calls-YYYY-MM-DD.jsonl, UTC dates). '' disables it.
 try:
@@ -382,7 +391,27 @@ def enrich_bridges(bridges):
     return bridges
 
 
+def redact(obj):
+    """Copy of a browser-bound message with HIDE_TGIDS numbers removed."""
+    if not _HIDE_TGIDS or not isinstance(obj, dict):
+        return obj
+    t = obj.get('type')
+    if t in ('stream_start', 'stream_end', 'stream_update') or 'action' in obj:
+        if obj.get('dst') in _HIDE_TGIDS:
+            obj = dict(obj, dst=None)
+        return obj
+    if t == 'bridges' or 'bridges' in obj:
+        out = {}
+        for name, members in obj['bridges'].items():
+            out[name] = [dict(m, TGID=None if m.get('TGID') in _HIDE_TGIDS else m.get('TGID'),
+                              ON=[x for x in m.get('ON', []) if x not in _HIDE_TGIDS],
+                              OFF=[x for x in m.get('OFF', []) if x not in _HIDE_TGIDS])
+                         for m in members]
+        obj = dict(obj, bridges=out)
+    return obj
+
 async def broadcast(obj):
+    obj = redact(obj)
     dead = set()
     for ws in STATE.clients:
         try:
@@ -592,9 +621,9 @@ def current_state():
         'report_name': REPORT_NAME,
         'hblink': STATE.hblink,
         'systems': STATE.systems,
-        'bridges': STATE.bridges,
-        'streams': list(STATE.streams.values()),
-        'log': list(STATE.log),
+        'bridges': redact({'bridges': STATE.bridges})['bridges'],
+        'streams': [redact(e) for e in STATE.streams.values()],
+        'log': [redact(e) for e in STATE.log],
         'ping_time': STATE.ping_time,
         'max_missed': STATE.max_missed,
         'ping_loss_warn': STATE.ping_loss_warn,

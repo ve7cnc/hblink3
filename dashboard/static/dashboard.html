@@ -102,7 +102,8 @@ function dur(secs){
 }
 const skey = e => e.system+'|'+e.slot+'|'+e.stream_id;
 function fmtSlots(s){ return s==='3'||s===3?'Both':s==='1'||s===1?'TS1':s==='2'||s===2?'TS2':esc(String(s||'')); }
-const idName = (name,id)=> name ? esc(name)+' <span class="sub mono">('+id+')</span>' : '<span class="mono">'+id+'</span>';
+// id is null for talkgroups the server hides (HIDE_TGIDS): show the name alone
+const idName = (name,id)=> id==null ? esc(name||'') : name ? esc(name)+' <span class="sub mono">('+id+')</span>' : '<span class="mono">'+id+'</span>';
 // Voice packet loss %, coloured by severity: >=1 % amber, >=5 % red. Measured from
 // packet sequence numbers where they exist (ipsc2hbp: repeater -> core; cc2obp:
 // c-Bridge -> core); at call end, calls from the c-Bridge show its own figure.
