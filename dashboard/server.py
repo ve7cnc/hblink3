@@ -18,6 +18,7 @@ deltas over a WebSocket. Run: python server.py  (or via run_dashboard.py).
 '''
 
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -72,6 +73,13 @@ try:
     from config import SERVER_REPEATERS
 except ImportError:
     SERVER_REPEATERS = 'open'
+
+# Directory for the call audit log (one JSON line per finished incoming call, in
+# daily files calls-YYYY-MM-DD.jsonl, UTC dates). '' disables it.
+try:
+    from config import CALL_LOG_DIR
+except ImportError:
+    CALL_LOG_DIR = ''
 
 # Feed transport: 'tcp' (default, connect to HBLINK_IP:HBLINK_PORT) or 'unix'
 # (connect to the daemon's local Unix socket HBLINK_SOCKET). Optional in config.
@@ -204,11 +212,11 @@ class LossSummary:
     def __init__(self):
         self.calls = deque()   # (time, system, peer, loss %, duration s)
 
-    def add(self, evt):
+    def add(self, evt, when=None):
         dur = evt.get('duration') or 0.0
         if evt.get('loss') is None or dur <= 0:
             return
-        self.calls.append((time.time(), evt['system'], evt['peer'], evt['loss'], dur))
+        self.calls.append((when or time.time(), evt['system'], evt['peer'], evt['loss'], dur))
 
     @staticmethod
     def _group(rows, keyf):
@@ -236,6 +244,62 @@ class LossSummary:
                 'peers': self._group(rows, lambda r: '{}|{}'.format(r[1], r[2]))}
 
 LOSS = LossSummary()
+
+
+# ---- call audit log ------------------------------------------------------------
+# Every finished incoming (RX) call is appended as one JSON line, with names resolved
+# at the time of the call, so there's a durable record beyond the in-memory call log.
+# Records keep the stream-event field names, so they reload straight into the call
+# log on startup. Files are never pruned here.
+_CALL_KEYS = ('call_type', 'system', 'stream_id', 'peer', 'peer_alias', 'src', 'src_alias',
+              'slot', 'dst', 'dst_alias', 'duration', 'rssi', 'loss', 'loss_src')
+
+def _call_log_path(ts):
+    return os.path.join(CALL_LOG_DIR, 'calls-{}.jsonl'.format(
+        datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime('%Y-%m-%d')))
+
+def write_call_record(evt):
+    if not CALL_LOG_DIR:
+        return
+    end = evt.get('_ts') or time.time()
+    rec = {'end': datetime.datetime.fromtimestamp(end, datetime.timezone.utc).isoformat(timespec='seconds'),
+           'start': datetime.datetime.fromtimestamp(end - (evt.get('duration') or 0),
+                                                    datetime.timezone.utc).isoformat(timespec='seconds')}
+    rec.update({k: evt[k] for k in _CALL_KEYS if evt.get(k) is not None})
+    try:
+        os.makedirs(CALL_LOG_DIR, exist_ok=True)
+        with open(_call_log_path(end), 'a') as f:
+            f.write(json.dumps(rec, separators=(',', ':')) + '\n')
+    except OSError as e:
+        logger.error('call log: could not write %s: %s', CALL_LOG_DIR, e)
+
+def load_recent_calls(n, since=0.0):
+    """The newest n call records (ending after `since`) as END stream events,
+    newest first."""
+    if not CALL_LOG_DIR or not os.path.isdir(CALL_LOG_DIR):
+        return []
+    out = []
+    for name in sorted((f for f in os.listdir(CALL_LOG_DIR)
+                        if f.startswith('calls-') and f.endswith('.jsonl')), reverse=True):
+        try:
+            with open(os.path.join(CALL_LOG_DIR, name)) as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            try:
+                rec = json.loads(line)
+                end = datetime.datetime.fromisoformat(rec['end']).timestamp()
+            except (ValueError, KeyError):
+                continue
+            if end < since:
+                return out                      # files and lines are in time order
+            evt = {k: rec[k] for k in _CALL_KEYS if k in rec}
+            evt.update({'type': 'stream_end', 'action': 'END', 'trx': 'RX', '_ts': end})
+            out.append(evt)
+            if len(out) >= n:
+                return out
+    return out
 
 
 def stream_key(evt):
@@ -344,6 +408,8 @@ async def handle_event(evt):
         # Log ingress (RX) legs only, matching the original monitor's behavior.
         if evt['trx'] == 'RX':
             STATE.log.appendleft(evt)
+            if evt['action'] == 'END':
+                write_call_record(evt)
         await broadcast(evt)
         if evt['action'] == 'END' and evt['trx'] == 'RX' and evt.get('loss') is not None:
             LOSS.add(evt)
@@ -437,6 +503,16 @@ async def reap_streams():
 
 @asynccontextmanager
 async def lifespan(app):
+    # Restore the call log and the 24 h loss figures from the audit files, so neither
+    # resets on a restart
+    for evt in reversed(load_recent_calls(LOG_LINES)):
+        STATE.log.appendleft(evt)
+    cutoff = time.time() - LOSS_WINDOW_SECS
+    for evt in reversed(load_recent_calls(100000, since=cutoff)):
+        LOSS.add(evt, when=evt['_ts'])
+    if STATE.log:
+        logger.info('call log: restored %d call(s) from %s (%d in the loss window)',
+                    len(STATE.log), CALL_LOG_DIR, len(LOSS.calls))
     await asyncio.to_thread(_download_aliases)
     _reload_aliases()
     refresher = asyncio.create_task(_alias_refresh_loop())
