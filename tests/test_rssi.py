@@ -67,12 +67,11 @@ class TestRssi(unittest.TestCase):
         self.assertEqual(len(end), 1)
         self.assertEqual(end[0].split(',')[10], '-100.5', end[0])
 
-    def test_end_without_rssi_has_empty_rssi_field(self):
+    def test_end_without_rssi_or_loss_is_unchanged(self):
         self._call([0, 0, 0])
         end = self._rx_end()
         self.assertEqual(len(end), 1)
-        f = end[0].split(',')
-        self.assertEqual((f[10], f[11]), ('', '0.0'), 'rssi empty, loss still reported')
+        self.assertEqual(end[0].count(','), 9, 'no trailing fields when neither is reported')
 
     def test_report_json_carries_rssi(self):
         srv = bridge.BridgeReportServer({})
@@ -99,12 +98,11 @@ class TestRssi(unittest.TestCase):
         self.assertEqual(ups[0].split(',')[10], '-99.0', ups[0])
         self.assertEqual(ups[1].split(',')[10], '-101.0', ups[1])
 
-    def test_live_update_without_rssi_still_reports_loss(self):
+    def test_live_update_sent_without_rssi(self):
         self._call([0, 0, 0])
         ups = self._updates()
         self.assertEqual(len(ups), 1, ups)
-        f = ups[0].split(',')
-        self.assertEqual((f[10], f[11]), ('', '0.0'))
+        self.assertEqual(ups[0].count(','), 9)
 
     def test_update_csv_becomes_stream_update(self):
         srv = bridge.BridgeReportServer({})

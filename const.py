@@ -45,9 +45,6 @@ STREAM_TIMEOUT = 2
 # Seconds between live mid-call reports (RSSI, loss) to the dashboard. MOTOTRBO
 # repeaters take an RSSI reading every 1.08 s (every third superframe).
 LIVE_UPDATE_SECS = 1.0
-# A gap between voice bursts longer than this (5.5 x 60 ms slots) may hide a whole
-# lost superframe, so loss accounting sizes it from arrival time.
-LOSS_GAP_SECS = 0.33
 
 # Options from the LC - used for late entry
 LC_OPT = b'\x00\x00\x20'

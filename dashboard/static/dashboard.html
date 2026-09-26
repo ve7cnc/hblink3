@@ -103,13 +103,15 @@ function dur(secs){
 const skey = e => e.system+'|'+e.slot+'|'+e.stream_id;
 function fmtSlots(s){ return s==='3'||s===3?'Both':s==='1'||s===1?'TS1':s==='2'||s===2?'TS2':esc(String(s||'')); }
 const idName = (name,id)=> name ? esc(name)+' <span class="sub mono">('+id+')</span>' : '<span class="mono">'+id+'</span>';
-// Voice loss %, coloured by severity: >=1 % amber, >=5 % red. The tooltip says who
-// measured it (this core on arrival, or the c-Bridge for calls it passed us).
+// Voice packet loss %, coloured by severity: >=1 % amber, >=5 % red. Measured from
+// packet sequence numbers where they exist (ipsc2hbp: repeater -> core; cc2obp:
+// c-Bridge -> core); at call end, calls from the c-Bridge show its own figure.
 function lossCls(v){ return v>=5?'loss-bad':v>=1?'loss-warn':''; }
+function lossFmt(v){ return v>=25.4 ? '≥25%' : v.toFixed(1)+'%'; }
 function lossTxt(e, suffix){
   if(e.loss==null) return '';
-  const who = e.loss_src==='c-bridge' ? 'reported by the c-Bridge' : 'measured by this core on arrival';
-  return '<span class="'+lossCls(e.loss)+'" title="Voice loss, '+who+'">'+e.loss.toFixed(1)+'%'+(suffix||'')+'</span>';
+  const who = e.loss_src==='c-bridge' ? 'reported by the c-Bridge for the whole call' : 'measured from packet sequence numbers on the link into this core';
+  return '<span class="'+lossCls(e.loss)+'" title="Voice loss, '+who+'">'+lossFmt(e.loss)+(suffix||'')+'</span>';
 }
 const callShort = ct => ct==='GROUP VOICE'?'Group Voice':ct==='UNIT VOICE'?'Unit Voice':ct==='GROUP DATA'?'Group Data':ct==='UNIT DATA'?'Unit Data':esc(ct);
 
@@ -362,8 +364,8 @@ function lossCell(kind, key){
   const s = ST.loss && ST.loss[kind] && ST.loss[kind][key];
   if(!s) return '<td class="mono sub" title="Voice loss, last 24 h">—</td>';
   return '<td class="mono" title="Voice loss over '+s.calls+' call(s), last 24 h">'
-    +'avg <span class="'+lossCls(s.avg)+'">'+s.avg.toFixed(1)+'%</span>'
-    +'<div class="sub">worst <span class="'+lossCls(s.worst)+'">'+s.worst.toFixed(1)+'%</span> · '+s.calls+' call'+(s.calls==1?'':'s')+'</div></td>';
+    +'avg <span class="'+lossCls(s.avg)+'">'+lossFmt(s.avg)+'</span>'
+    +'<div class="sub">worst <span class="'+lossCls(s.worst)+'">'+lossFmt(s.worst)+'</span> · '+s.calls+' call'+(s.calls==1?'':'s')+'</div></td>';
 }
 
 // ---------- live tick ----------

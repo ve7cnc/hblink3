@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 #
-# Voice loss accounting: missing bursts are counted from gaps in the superframe
-# position (A..F), long dropouts sized from arrival time; the result is reported
-# live (UPDATE) and per call (END), and an OpenBridge terminator may carry the
-# upstream's own figure (cc2obp relaying the c-Bridge's B-off LOSS).
+# Voice loss comes from the sender, in the DMRD BER byte as a loss code
+# (0 = not measured, else 1 + 10 x percent): ipsc2hbp on HBP server systems with
+# LOSS_IN_BER, cc2obp on OpenBridge systems with RSSI_TRAILER (running figure on
+# bursts, the c-Bridge's own figure on the terminator). Elsewhere the byte is a
+# real bit error rate and must be ignored.
 #
 # Run from the repo root:   venv/bin/python -m unittest discover -s tests
 
@@ -23,51 +24,13 @@ _FT_VSYNC = 1
 TG, SRC, PEER, SID = bytes_3(3100), bytes_3(3120001), bytes_4(312100), bytes_4(0xbeef)
 
 
-class TestLossMath(unittest.TestCase):
-    """voice_loss_track on a bare status dict, with explicit arrival times."""
+class TestLossCode(unittest.TestCase):
 
-    def _run(self, seq):
-        st = {}
-        bridge.voice_loss_reset(st)
-        for vseq, t in seq:
-            bridge.voice_loss_track(st, vseq, t)
-        return st
-
-    def test_clean_stream_no_loss(self):
-        st = self._run([(i % 6, i * 0.06) for i in range(24)])
-        self.assertEqual((st['RX_VRECV'], st['RX_VLOST']), (24, 0))
-        self.assertEqual(bridge.voice_loss_pct(st), '0.0')
-
-    def test_one_missing_burst(self):
-        seq = [(i % 6, i * 0.06) for i in range(12) if i != 3]
-        st = self._run(seq)
-        self.assertEqual((st['RX_VRECV'], st['RX_VLOST']), (11, 1))
-        self.assertEqual(bridge.voice_loss_pct(st), '8.3')
-
-    def test_jitter_is_not_loss(self):
-        # bursts bunched and delayed, but every position present in order
-        times = [0, .01, .02, .20, .21, .22, .40, .41, .42, .60, .61, .62]
-        st = self._run([(i % 6, t) for i, t in enumerate(times)])
-        self.assertEqual(st['RX_VLOST'], 0)
-
-    def test_dropout_longer_than_a_superframe(self):
-        # A, B, then a 0.48 s gap = 8 slots: the next burst is 8 on (position D)
-        st = self._run([(0, 0.0), (1, 0.06), (3, 0.54)])
-        self.assertEqual(st['RX_VLOST'], 7)
-
-    def test_whole_superframe_lost(self):
-        # same position 6 slots later (0.36 s): 5 lost, not a duplicate
-        st = self._run([(0, 0.0), (1, 0.06), (1, 0.42)])
-        self.assertEqual(st['RX_VLOST'], 5)
-
-    def test_duplicate_burst_ignored(self):
-        st = self._run([(0, 0.0), (1, 0.06), (1, 0.07), (2, 0.12)])
-        self.assertEqual((st['RX_VRECV'], st['RX_VLOST']), (3, 0))
-
-    def test_no_voice_no_figure(self):
-        st = {}
-        bridge.voice_loss_reset(st)
-        self.assertEqual(bridge.voice_loss_pct(st), '')
+    def test_decode(self):
+        self.assertEqual(bridge.loss_code_pct(0), '')
+        self.assertEqual(bridge.loss_code_pct(1), '0.0')
+        self.assertEqual(bridge.loss_code_pct(27), '2.6')
+        self.assertEqual(bridge.loss_code_pct(255), '25.4')
 
     def test_event_extras_trims_trailing_empties(self):
         self.assertEqual(bridge.event_extras('', '', ''), '')
@@ -93,50 +56,60 @@ class TestLossReports(unittest.TestCase):
         for name in ('SERVER-1', 'OBP-1'):
             bridge.systems[name]._report = Rep()
 
-    def _feed(self, system, ft, dv, seq, ber=0):
+    def _feed(self, system, ft, dv, seq, ber):
         data = mk_dmrd(seq, SRC, TG, PEER, 1, 'group', ft, dv, SID)[:53] + bytes([ber, 0])
         bridge.systems[system].dmrd_received(PEER, SRC, TG, seq, 1, 'group', ft, dv, SID, data)
 
-    def _call(self, system, positions, ber_on_term=0):
-        self._feed(system, _FT_DATA_SYNC, _VHEAD, 0)
-        for i, pos in enumerate(positions):
+    def _call(self, system, burst_codes, term_code):
+        self._feed(system, _FT_DATA_SYNC, _VHEAD, 0, 0)
+        for i, code in enumerate(burst_codes):
             self.w.clock.tick(0.06)
-            self._feed(system, _FT_VSYNC if pos == 0 else _FT_VOICE, pos, i + 1)
+            self._feed(system, _FT_VSYNC if i % 6 == 0 else _FT_VOICE, i % 6, i + 1, code)
         self.w.clock.tick(0.06)
-        self._feed(system, _FT_DATA_SYNC, _VTERM, len(positions) + 1, ber=ber_on_term)
+        self._feed(system, _FT_DATA_SYNC, _VTERM, len(burst_codes) + 1, term_code)
 
-    def _end(self, system):
-        return [e.split(',') for e in self.events if e.startswith('GROUP VOICE,END,RX,{},'.format(system))]
+    def _events(self, kind, system):
+        return [e.split(',') for e in self.events
+                if e.startswith('GROUP VOICE,{},RX,{},'.format(kind, system))]
 
-    def test_hbp_end_reports_loss(self):
-        # 12 slots, position D of the first superframe missing
-        self._call('SERVER-1', [p % 6 for p in range(12) if p != 3])
-        end = self._end('SERVER-1')
+    def test_hbp_with_loss_in_ber(self):
+        self.w.CONFIG['SYSTEMS']['SERVER-1']['LOSS_IN_BER'] = True
+        self._call('SERVER-1', [1, 1, 6, 6], 6)          # running 0 % then 0.5 %
+        end = self._events('END', 'SERVER-1')
         self.assertEqual(len(end), 1)
-        self.assertEqual(end[0][11], '8.3')
+        self.assertEqual(end[0][11:], ['0.5'])            # no loss_src: our own core
+        ups = self._events('UPDATE', 'SERVER-1')
+        self.assertEqual(ups[0][11], '0.0')
 
-    def test_obp_end_measured_loss_without_upstream_figure(self):
-        self._call('OBP-1', [p % 6 for p in range(12)])
-        end = self._end('OBP-1')
-        self.assertEqual(len(end), 1)
-        self.assertEqual(end[0][11:], ['0.0'])
+    def test_hbp_without_loss_in_ber_ignores_ber(self):
+        # e.g. an MMDVM hotspot: the byte is a real bit error rate
+        self._call('SERVER-1', [7, 7, 7], 7)
+        end = self._events('END', 'SERVER-1')
+        self.assertEqual(len(end[0]), 10, end[0])
 
-    def test_obp_end_prefers_upstream_figure(self):
-        # BER byte 6 on the terminator = 1 + 2 x 2.5 %: the c-Bridge's B-off LOSS
-        self._call('OBP-1', [p % 6 for p in range(12)], ber_on_term=6)
-        end = self._end('OBP-1')
-        self.assertEqual(end[0][11:], ['2.5', 'c-bridge'])
+    def test_obp_running_then_upstream_figure(self):
+        self.w.CONFIG['SYSTEMS']['OBP-1']['RSSI_TRAILER'] = True
+        self._call('OBP-1', [1, 1, 201, 201], 27)         # running up to 20 %, c-Bridge says 2.6 %
+        ups = self._events('UPDATE', 'OBP-1')
+        self.assertEqual(ups[0][11], '0.0')
+        end = self._events('END', 'OBP-1')
+        self.assertEqual(end[0][11:], ['2.6', 'c-bridge'])
+
+    def test_obp_without_trailer_ignores_ber(self):
+        self._call('OBP-1', [27, 27], 27)
+        end = self._events('END', 'OBP-1')
+        self.assertEqual(len(end[0]), 10, end[0])
 
     def test_json_carries_loss(self):
         srv = bridge.BridgeReportServer({})
         cap = []
         srv._send_json = cap.append
-        srv.send_bridge_event('GROUP VOICE,END,RX,OBP-1,1,2,3,1,3100,4.20,-99.0,2.5,c-bridge')
-        self.assertEqual((cap[0]['rssi'], cap[0]['loss'], cap[0]['loss_src']), (-99.0, 2.5, 'c-bridge'))
-        srv.send_bridge_event('GROUP VOICE,UPDATE,RX,SERVER-1,1,2,3,1,3100,2.00,,1.5')
+        srv.send_bridge_event('GROUP VOICE,END,RX,OBP-1,1,2,3,1,3100,4.20,-99.0,2.6,c-bridge')
+        self.assertEqual((cap[0]['rssi'], cap[0]['loss'], cap[0]['loss_src']), (-99.0, 2.6, 'c-bridge'))
+        srv.send_bridge_event('GROUP VOICE,UPDATE,RX,SERVER-1,1,2,3,1,3100,2.00,,0.1')
         self.assertEqual(cap[1]['type'], 'stream_update')
         self.assertNotIn('rssi', cap[1])
-        self.assertEqual(cap[1]['loss'], 1.5)
+        self.assertEqual(cap[1]['loss'], 0.1)
 
 
 if __name__ == '__main__':

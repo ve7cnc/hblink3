@@ -130,6 +130,7 @@ You are the Server; Clients (repeaters, hotspots, or another HBlink acting as a 
 | `PORT` | Local UDP port Clients connect to. |
 | `PASSPHRASE` | Shared login secret Clients must present. |
 | `GROUP_HANGTIME` | Seconds a slot stays reserved to the current talkgroup after a transmission, so quick replies aren't lost to contention. |
+| `LOSS_IN_BER` | `True` reads the DMRD BER byte from this system's Clients as a **loss code** — 0 = not measured, else 1 + 10 × percent (0.1 % steps, 255 = 25.4 % or more) — and reports it per call (live and at END). Set it only for Clients that use that convention, such as ipsc2hbp (which measures loss from the repeater's IPSC sequence numbers). MMDVM hotspots send a real bit error rate there. Default `False`. |
 | `USE_ACL` | Enable this system's own ACLs. |
 | `REG_ACL` | Which radio IDs may register to this Server. |
 | `SUB_ACL` | Subscriber ACL for this system. |
@@ -174,7 +175,7 @@ OpenBridge is a Server-to-Server (both ends equal), always-TS1 link authenticate
 | `PASSPHRASE` | Shared HMAC-SHA1 key. **Must match exactly on both ends** — this plus the source socket *is* the authentication. |
 | `NETWORK_ID` | A DMR-ID-shaped number identifying this server. By convention it is stamped into every outgoing frame's "Repeater ID" field. |
 | `PRESERVE_SOURCE_PEER` | `True` forwards the **originating** peer ID in that Repeater-ID field instead of overwriting it with `NETWORK_ID`. The field is unvalidated (auth is the HMAC + source socket) and used only for logging/reporting, so this simply preserves a call's true source across the link. Default `False` (spec-conventional). Most useful when **both** ends enable it. |
-| `RSSI_TRAILER` | `True` appends the Homebrew BER/RSSI bytes to every outgoing DMRD — a 55-byte body with the HMAC computed over all 55 — so a peer can see the source repeater's RSSI. It also accepts that 55-byte form inbound and reports the RSSI, and a loss figure in the BER byte (1 + 2 × percent), carried on a call's terminator (cc2obp with `rssi_trailer` relays the c-Bridge's end-of-call RSSI and loss this way). **Non-standard: set it only for a peer that expects it** (e.g. cc2obp). Standard 53-byte frames are still accepted. Default `False`. |
+| `RSSI_TRAILER` | `True` appends the Homebrew BER/RSSI bytes to every outgoing DMRD — a 55-byte body with the HMAC computed over all 55 — so a peer can see the source repeater's RSSI. It also accepts that 55-byte form inbound and reports the RSSI, and the loss code in the BER byte (see `LOSS_IN_BER`): the running figure on bursts and the upstream's own figure on the terminator (cc2obp with `rssi_trailer` sends the CC-CC leg's loss, then the c-Bridge's end-of-call RSSI and loss, this way). **Non-standard: set it only for a peer that expects it** (e.g. cc2obp). Standard 53-byte frames are still accepted. Default `False`. |
 | `BOTH_SLOTS` | `True` lets unit (private) calls use both slots; group traffic is always TS1. **🛑 Only HBlink is known to accept this. No other OpenBridge server (BrandMeister, DMR+, etc.) accepts both-slots traffic — set `True` only on HBlink-to-HBlink links, and leave it `False` everywhere else.** |
 | `USE_ACL` / `SUB_ACL` | This link's subscriber ACL. |
 | `TGID_ACL` | Talkgroup ACL (TS1 only — note the single-slot name, unlike the `SERVER`/`OUTBOUND` `TGID_TS1_ACL`/`TGID_TS2_ACL`). |

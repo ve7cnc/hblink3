@@ -236,6 +236,7 @@ def build_config(_config_file):
                         'PORT': config.getint(section, 'PORT'),
                         'PASSPHRASE': bytes(config.get(section, 'PASSPHRASE'), 'utf-8'),
                         'GROUP_HANGTIME': config.getint(section, 'GROUP_HANGTIME'),
+                        'LOSS_IN_BER': config.getboolean(section, 'LOSS_IN_BER', fallback=False),
                         'USE_ACL': config.getboolean(section, 'USE_ACL'),
                         'REG_ACL': config.get(section, 'REG_ACL'),
                         'SUB_ACL': config.get(section, 'SUB_ACL'),
