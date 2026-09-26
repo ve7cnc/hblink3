@@ -65,13 +65,14 @@ class TestRssi(unittest.TestCase):
         self._call([0, 99, 101, 101])
         end = self._rx_end()
         self.assertEqual(len(end), 1)
-        self.assertTrue(end[0].endswith(',-100.5'), end[0])
+        self.assertEqual(end[0].split(',')[10], '-100.5', end[0])
 
-    def test_end_without_rssi_is_unchanged(self):
+    def test_end_without_rssi_has_empty_rssi_field(self):
         self._call([0, 0, 0])
         end = self._rx_end()
         self.assertEqual(len(end), 1)
-        self.assertEqual(end[0].count(','), 9, 'no trailing rssi field when none reported')
+        f = end[0].split(',')
+        self.assertEqual((f[10], f[11]), ('', '0.0'), 'rssi empty, loss still reported')
 
     def test_report_json_carries_rssi(self):
         srv = bridge.BridgeReportServer({})
@@ -85,22 +86,25 @@ class TestRssi(unittest.TestCase):
     def _updates(self):
         return [e for e in self.events if e.startswith('GROUP VOICE,UPDATE,RX,SERVER-1,')]
 
-    def test_live_update_on_change_rate_limited(self):
+    def test_live_update_rate_limited_with_latest_rssi(self):
         self._frame(_FT_DATA_SYNC, _VHEAD, 0)
-        self._frame(_FT_VOICE, 0, 99, seq=1)       # first reading -> update
-        self._frame(_FT_VOICE, 1, 99, seq=2)       # unchanged -> none
-        self._frame(_FT_VOICE, 2, 101, seq=3)      # changed, but < 1 s later -> none
+        self._frame(_FT_VOICE, 0, 99, seq=1)       # first voice -> update
+        self._frame(_FT_VOICE, 1, 99, seq=2)       # < 1 s later -> none
+        self._frame(_FT_VOICE, 2, 101, seq=3)      # < 1 s later -> none
         self.w.clock.tick(1.1)
-        self._frame(_FT_VOICE, 3, 101, seq=4)      # changed vs last sent, >= 1 s -> update
-        self._frame(_FT_VOICE, 4, 101, seq=5)      # unchanged -> none
+        self._frame(_FT_VOICE, 3, 101, seq=4)      # >= 1 s -> update, latest reading
+        self._frame(_FT_VOICE, 4, 101, seq=5)      # < 1 s later -> none
         ups = self._updates()
         self.assertEqual(len(ups), 2, ups)
-        self.assertTrue(ups[0].endswith(',-99.0'), ups[0])
-        self.assertTrue(ups[1].endswith(',-101.0'), ups[1])
+        self.assertEqual(ups[0].split(',')[10], '-99.0', ups[0])
+        self.assertEqual(ups[1].split(',')[10], '-101.0', ups[1])
 
-    def test_no_live_update_without_rssi(self):
+    def test_live_update_without_rssi_still_reports_loss(self):
         self._call([0, 0, 0])
-        self.assertEqual(self._updates(), [])
+        ups = self._updates()
+        self.assertEqual(len(ups), 1, ups)
+        f = ups[0].split(',')
+        self.assertEqual((f[10], f[11]), ('', '0.0'))
 
     def test_update_csv_becomes_stream_update(self):
         srv = bridge.BridgeReportServer({})
@@ -122,7 +126,7 @@ class TestRssi(unittest.TestCase):
         frame(_FT_DATA_SYNC, _VTERM, 108, 2)
         end = [e for e in self.events if e.startswith('GROUP VOICE,END,RX,OBP-1,')]
         self.assertEqual(len(end), 1, self.events)
-        self.assertTrue(end[0].endswith(',-108.0'), end[0])
+        self.assertEqual(end[0].split(',')[10], '-108.0', end[0])
 
     def test_obp_without_trailer_sends_53_bytes(self):
         self._call([99, 99])

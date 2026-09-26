@@ -194,6 +194,52 @@ class State:
 STATE = State()
 
 
+# ---- loss summary: per source repeater and per talkgroup, in memory ----
+# Built from RX call ENDs that carry a loss figure, over a rolling window. Resets
+# when the dashboard restarts (long-term metrics are a separate, future dashboard).
+LOSS_WINDOW_SECS = 24 * 3600
+
+class LossSummary:
+    def __init__(self):
+        self.calls = deque()   # (time, peer, peer_alias, dst, dst_alias, loss %, duration s)
+
+    def add(self, evt):
+        dur = evt.get('duration') or 0.0
+        if evt.get('loss') is None or dur <= 0:
+            return
+        self.calls.append((time.time(), evt['peer'], evt.get('peer_alias', ''),
+                           evt['dst'], evt.get('dst_alias', ''), evt['loss'], dur))
+
+    @staticmethod
+    def _group(rows, key, alias):
+        g = {}
+        for r in rows:
+            e = g.setdefault(r[key], {'id': r[key], 'alias': r[alias], 'calls': 0,
+                                      '_w': 0.0, '_d': 0.0, 'worst': 0.0, 'last': 0.0})
+            e['calls'] += 1
+            e['_w'] += r[5] * r[6]       # duration-weighted, so short calls don't dominate
+            e['_d'] += r[6]
+            e['worst'] = max(e['worst'], r[5])
+            e['last'] = max(e['last'], r[0])
+        out = []
+        for e in g.values():
+            e['avg'] = round(e.pop('_w') / e['_d'], 1) if e['_d'] else 0.0
+            e.pop('_d')
+            e['last_secs'] = int(time.time() - e.pop('last'))
+            out.append(e)
+        return sorted(out, key=lambda e: (-e['avg'], -e['calls']))
+
+    def snapshot(self):
+        cutoff = time.time() - LOSS_WINDOW_SECS
+        while self.calls and self.calls[0][0] < cutoff:
+            self.calls.popleft()
+        rows = list(self.calls)
+        return {'type': 'loss_summary', 'window_secs': LOSS_WINDOW_SECS,
+                'repeaters': self._group(rows, 1, 2), 'talkgroups': self._group(rows, 3, 4)}
+
+LOSS = LossSummary()
+
+
 def stream_key(evt):
     return '{}|{}|{}'.format(evt['system'], evt['slot'], evt['stream_id'])
 
@@ -279,11 +325,14 @@ async def handle_event(evt):
         STATE.bridges = enrich_bridges(evt['bridges'])
         await broadcast({'type': 'bridges', 'bridges': STATE.bridges})
     elif t == 'stream_update':
-        # Live mid-call reading (RSSI). Keep the stored START current so a browser
-        # that connects mid-call gets it; not logged -- the END carries the average.
+        # Live mid-call reading (latest RSSI, loss so far). Keep the stored START
+        # current so a browser that connects mid-call gets it; not logged -- the END
+        # carries the call's figures.
         cur = STATE.streams.get(stream_key(evt))
         if cur is not None:
-            cur['rssi'] = evt.get('rssi')
+            for k in ('rssi', 'loss'):
+                if k in evt:
+                    cur[k] = evt[k]
             await broadcast(evt)
     elif t in ('stream_start', 'stream_end'):
         enrich_stream(evt)
@@ -298,6 +347,9 @@ async def handle_event(evt):
         if evt['trx'] == 'RX':
             STATE.log.appendleft(evt)
         await broadcast(evt)
+        if evt['action'] == 'END' and evt['trx'] == 'RX' and evt.get('loss') is not None:
+            LOSS.add(evt)
+            await broadcast(LOSS.snapshot())
     elif t == 'ping':
         pass   # liveness heartbeat; receiving it already reset the feed read timeout
     else:
@@ -432,6 +484,7 @@ def current_state():
         'ping_time': STATE.ping_time,
         'max_missed': STATE.max_missed,
         'ping_loss_warn': STATE.ping_loss_warn,
+        'loss_summary': LOSS.snapshot(),
     }
 
 @app.websocket('/ws')

@@ -305,12 +305,60 @@ def stream_trimmer_loop():
                         system, int_id(stream_id), get_alias(int_id(_stream['RFS']), subscriber_ids), get_alias(int_id(_stream.get('PEER', _sysconfig['NETWORK_ID'])), peer_ids), _stream['TYPE'], get_alias(int_id(_stream['DST']), talkgroup_ids), _stream['LAST'] - _stream['START'])
                         if CONFIG['REPORTS']['REPORT']:
                             if _stream['TYPE'] == 'GROUP':
-                                systems[system]._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}'.format(system, int_id(stream_id), int_id(_stream.get('PEER', _sysconfig['NETWORK_ID'])), int_id(_stream['RFS']), 1, int_id(_stream['DST']), _stream['LAST'] - _stream['START']).encode(encoding='utf-8', errors='ignore'))
+                                systems[system]._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(system, int_id(stream_id), int_id(_stream.get('PEER', _sysconfig['NETWORK_ID'])), int_id(_stream['RFS']), 1, int_id(_stream['DST']), _stream['LAST'] - _stream['START'], event_extras('', voice_loss_pct(_stream))).encode(encoding='utf-8', errors='ignore'))
                             elif _stream['TYPE'] == 'UNIT':
                                 systems[system]._report.send_bridge_event('UNIT VOICE,END,RX,{},{},{},{},{},{},{:.2f}'.format(system, int_id(stream_id), int_id(_stream.get('PEER', _sysconfig['NETWORK_ID'])), int_id(_stream['RFS']), 1, int_id(_stream['DST']), _stream['LAST'] - _stream['START']).encode(encoding='utf-8', errors='ignore'))
                     removed = systems[system].STATUS.pop(stream_id)
                 else:
                     logger.error('(%s) Attemped to remove OpenBridge Stream ID %s not in the Stream ID list: %s', system, int_id(stream_id), [id for id in systems[system].STATUS])
+
+# ---- per-stream voice loss accounting ----
+# Every voice burst carries its superframe position (A..F = vseq 0..5), so a gap in
+# that sequence counts missing bursts exactly -- independent of network jitter. Only
+# a gap longer than LOSS_GAP_SECS (which may hide whole lost superframes) is sized
+# from arrival time: the nearest slot count consistent with the position step.
+# State lives in the stream's status dict (HBP slot or OpenBridge stream).
+def voice_loss_reset(_st):
+    _st['RX_VPOS'] = None
+    _st['RX_VTIME'] = 0.0
+    _st['RX_VRECV'] = 0
+    _st['RX_VLOST'] = 0
+
+def voice_loss_track(_st, _vseq, _now):
+    _prev = _st.get('RX_VPOS')
+    if _prev is not None:
+        _step = (_vseq - _prev) % 6
+        _dt = _now - _st['RX_VTIME']
+        if _dt > LOSS_GAP_SECS:
+            _n = max(1, round(_dt / 0.06))
+            _k = _step + 6 * round((_n - _step) / 6)
+            if _k < 1:
+                _k += 6
+        elif _step == 0:
+            return                          # duplicate burst: not counted
+        else:
+            _k = _step
+        _st['RX_VLOST'] += _k - 1
+    _st['RX_VPOS'] = _vseq
+    _st['RX_VTIME'] = _now
+    _st['RX_VRECV'] += 1
+
+# Loss so far as a percentage string (one decimal), or '' before any voice.
+def voice_loss_pct(_st):
+    _recv = _st.get('RX_VRECV', 0)
+    if not _recv:
+        return ''
+    return '{:.1f}'.format(100.0 * _st['RX_VLOST'] / (_recv + _st['RX_VLOST']))
+
+# Optional trailing CSV fields of a stream event, after the duration:
+# rssi, loss, loss_src -- trailing empty fields dropped, so an event with none
+# of them reads exactly as before.
+def event_extras(*_fields):
+    _f = list(_fields)
+    while _f and not _f[-1]:
+        _f.pop()
+    return ''.join(',' + x for x in _f)
+
 
 class routerOBP(OPENBRIDGE):
 
@@ -337,8 +385,10 @@ class routerOBP(OPENBRIDGE):
                 'PEER':      _peer_id,      # remember source peer so the timeout-cleanup report matches START
                 'TYPE':      'GROUP',
                 'DST':       _dst_id,
-                'ACTIVE':    True
+                'ACTIVE':    True,
+                'RX_UPD':    0.0,
             }
+            voice_loss_reset(self.STATUS[_stream_id])
 
             # If we can, use the LC from the voice header as to keep all options intact
             if _frame_type == HBPF_DATA_SYNC and _dtype_vseq == HBPF_SLT_VHEAD:
@@ -357,6 +407,14 @@ class routerOBP(OPENBRIDGE):
                 self._report.send_bridge_event('GROUP VOICE,START,RX,{},{},{},{},{},{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id)).encode(encoding='utf-8', errors='ignore'))
 
         self.STATUS[_stream_id]['LAST'] = pkt_time
+
+        # Loss accounting on voice bursts, with a live report about once a second
+        _st = self.STATUS[_stream_id]
+        if _frame_type in (HBPF_VOICE, HBPF_VOICE_SYNC):
+            voice_loss_track(_st, _dtype_vseq, pkt_time)
+            if CONFIG['REPORTS']['REPORT'] and pkt_time - _st['RX_UPD'] >= LIVE_UPDATE_SECS:
+                _st['RX_UPD'] = pkt_time
+                self._report.send_bridge_event('GROUP VOICE,UPDATE,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), pkt_time - _st['START'], event_extras('', voice_loss_pct(_st))).encode(encoding='utf-8', errors='ignore'))
 
 
         # Hand each active target the frame; the target system applies its own
@@ -378,10 +436,17 @@ class routerOBP(OPENBRIDGE):
             # End-of-call RSSI on the terminator's BER/RSSI trailer (RSSI_TRAILER peers
             # only, e.g. cc2obp relaying the c-Bridge's B-off); '' when not reported.
             _rssi = '{:.1f}'.format(-_data[54]) if len(_data) > 54 and _data[54] else ''
-            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f%s', \
-                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration, ', RSSI: {} dBm'.format(_rssi) if _rssi else '')
+            # Loss: the upstream's own figure when it sent one on the terminator's BER
+            # byte (cc2obp relaying the c-Bridge's B-off LOSS: 1 + 2 x percent, 0 =
+            # none); otherwise what we measured on arrival.
+            if len(_data) > 53 and _data[53]:
+                _loss, _loss_src = '{:.1f}'.format((_data[53] - 1) / 2.0), 'c-bridge'
+            else:
+                _loss, _loss_src = voice_loss_pct(self.STATUS[_stream_id]), ''
+            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f%s%s', \
+                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration, ', RSSI: {} dBm'.format(_rssi) if _rssi else '', ', Loss: {}%{}'.format(_loss, ' (c-Bridge)' if _loss_src else '') if _loss else '')
             if CONFIG['REPORTS']['REPORT']:
-               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration, ',' + _rssi if _rssi else '').encode(encoding='utf-8', errors='ignore'))
+               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration, event_extras(_rssi, _loss, _loss_src)).encode(encoding='utf-8', errors='ignore'))
             self.STATUS[_stream_id]['ACTIVE'] = False
             logger.debug('(%s) OpenBridge sourced call stream end, remove terminated Stream ID: %s', self._system, int_id(_stream_id))
 
@@ -592,9 +657,14 @@ class routerHBP(HBSYSTEM):
                 # the current RX stream, for the call-end report.
                 'RX_RSSI_SUM':  0,
                 'RX_RSSI_N':    0,
-                # Last RSSI byte sent in a live UPDATE event, and when.
-                'RX_RSSI_LAST': 0,
-                'RX_RSSI_SENT': 0.0,
+                # Latest RSSI byte, and when the last live UPDATE was sent.
+                'RX_RSSI_CUR':  0,
+                'RX_UPD':       0.0,
+                # Voice loss accounting (see voice_loss_track).
+                'RX_VPOS':      None,
+                'RX_VTIME':     0.0,
+                'RX_VRECV':     0,
+                'RX_VLOST':     0,
                 'RX_LC':        b'\x00',
                 'TX_H_LC':      b'\x00',
                 'TX_T_LC':      b'\x00',
@@ -635,9 +705,14 @@ class routerHBP(HBSYSTEM):
                 # the current RX stream, for the call-end report.
                 'RX_RSSI_SUM':  0,
                 'RX_RSSI_N':    0,
-                # Last RSSI byte sent in a live UPDATE event, and when.
-                'RX_RSSI_LAST': 0,
-                'RX_RSSI_SENT': 0.0,
+                # Latest RSSI byte, and when the last live UPDATE was sent.
+                'RX_RSSI_CUR':  0,
+                'RX_UPD':       0.0,
+                # Voice loss accounting (see voice_loss_track).
+                'RX_VPOS':      None,
+                'RX_VTIME':     0.0,
+                'RX_VRECV':     0,
+                'RX_VLOST':     0,
                 'RX_LC':        b'\x00',
                 'TX_H_LC':      b'\x00',
                 'TX_T_LC':      b'\x00',
@@ -665,7 +740,7 @@ class routerHBP(HBSYSTEM):
             self._report.send_bridge_event('{},END,RX,{},{},{},{},{},{},{:.2f}{}'.format(
                 st.get('RX_CT', 'GROUP VOICE'), self._system, int_id(st['RX_STREAM_ID']),
                 int_id(st['RX_PEER']), int_id(st['RX_RFS']), _slot, int_id(st['RX_TGID']),
-                duration, self._rx_rssi_field(_slot)).encode(encoding='utf-8', errors='ignore'))
+                duration, event_extras(self._rx_rssi(_slot), voice_loss_pct(st))).encode(encoding='utf-8', errors='ignore'))
 
     # Average RX RSSI (dBm, one decimal) of the slot's current stream, or '' if
     # the source never reported one (the HBP RSSI byte was always 0).
@@ -675,10 +750,6 @@ class routerHBP(HBSYSTEM):
             return ''
         return '{:.1f}'.format(-st['RX_RSSI_SUM'] / st['RX_RSSI_N'])
 
-    # Optional trailing CSV field for an END report: ',<rssi>' or nothing.
-    def _rx_rssi_field(self, _slot):
-        _rssi = self._rx_rssi(_slot)
-        return ',' + _rssi if _rssi else ''
 
 
     def group_received(self, _peer_id, _rf_src, _dst_id, _seq, _slot, _frame_type, _dtype_vseq, _stream_id, _data):
@@ -707,8 +778,9 @@ class routerHBP(HBSYSTEM):
             self.STATUS[_slot]['RX_CT'] = 'GROUP VOICE'
             self.STATUS[_slot]['RX_RSSI_SUM'] = 0
             self.STATUS[_slot]['RX_RSSI_N'] = 0
-            self.STATUS[_slot]['RX_RSSI_LAST'] = 0
-            self.STATUS[_slot]['RX_RSSI_SENT'] = 0.0
+            self.STATUS[_slot]['RX_RSSI_CUR'] = 0
+            self.STATUS[_slot]['RX_UPD'] = 0.0
+            voice_loss_reset(self.STATUS[_slot])
             logger.info('(%s) *GROUP CALL START* STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s', \
                     self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot)
             if CONFIG['REPORTS']['REPORT']:
@@ -744,18 +816,20 @@ class routerHBP(HBSYSTEM):
             if _bridge_state_changed and CONFIG['REPORTS']['REPORT'] and report_server:
                 report_server.send_bridge()
 
+        _st = self.STATUS[_slot]
         # RSSI byte of the HBP BER/RSSI trailer (-dBm; 0 = not reported)
         if len(_data) > 54 and _data[54]:
-            _st = self.STATUS[_slot]
             _st['RX_RSSI_SUM'] += _data[54]
             _st['RX_RSSI_N'] += 1
-            # Live reading for the dashboard: report a changed value, at most once
-            # per RSSI_UPDATE_SECS (MOTOTRBO repeaters report roughly every second).
-            if (CONFIG['REPORTS']['REPORT'] and _data[54] != _st['RX_RSSI_LAST']
-                    and pkt_time - _st['RX_RSSI_SENT'] >= RSSI_UPDATE_SECS):
-                _st['RX_RSSI_LAST'] = _data[54]
-                _st['RX_RSSI_SENT'] = pkt_time
-                self._report.send_bridge_event('GROUP VOICE,UPDATE,RX,{},{},{},{},{},{},{:.2f},{:.1f}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), pkt_time - _st['RX_START'], -_data[54]).encode(encoding='utf-8', errors='ignore'))
+            _st['RX_RSSI_CUR'] = _data[54]
+        # Loss accounting on voice bursts, and a live report (latest RSSI, loss so
+        # far) for the dashboard about once a second
+        if _frame_type in (HBPF_VOICE, HBPF_VOICE_SYNC):
+            voice_loss_track(_st, _dtype_vseq, pkt_time)
+            if CONFIG['REPORTS']['REPORT'] and pkt_time - _st['RX_UPD'] >= LIVE_UPDATE_SECS:
+                _st['RX_UPD'] = pkt_time
+                _cur = '{:.1f}'.format(-_st['RX_RSSI_CUR']) if _st['RX_RSSI_CUR'] else ''
+                self._report.send_bridge_event('GROUP VOICE,UPDATE,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), pkt_time - _st['RX_START'], event_extras(_cur, voice_loss_pct(_st))).encode(encoding='utf-8', errors='ignore'))
 
         # Hand each active target the frame; the target system applies its own
         # admission/contention policy and egress framing (see bridge_group).
@@ -775,10 +849,11 @@ class routerHBP(HBSYSTEM):
             self.STATUS[_slot]['RX_TERMINATED'] = True
             call_duration = pkt_time - self.STATUS[_slot]['RX_START']
             _rssi = self._rx_rssi(_slot)
-            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f%s', \
-                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration, ', RSSI: {} dBm'.format(_rssi) if _rssi else '')
+            _loss = voice_loss_pct(self.STATUS[_slot])
+            logger.info('(%s) *GROUP CALL END*   STREAM ID: %s SUB: %s (%s) PEER: %s (%s) TGID %s (%s), TS %s, Duration: %.2f%s%s', \
+                    self._system, int_id(_stream_id), get_alias(_rf_src, subscriber_ids), int_id(_rf_src), get_alias(_peer_id, peer_ids), int_id(_peer_id), get_alias(_dst_id, talkgroup_ids), int_id(_dst_id), _slot, call_duration, ', RSSI: {} dBm'.format(_rssi) if _rssi else '', ', Loss: {}%'.format(_loss) if _loss else '')
             if CONFIG['REPORTS']['REPORT']:
-               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration, self._rx_rssi_field(_slot)).encode(encoding='utf-8', errors='ignore'))
+               self._report.send_bridge_event('GROUP VOICE,END,RX,{},{},{},{},{},{},{:.2f}{}'.format(self._system, int_id(_stream_id), int_id(_peer_id), int_id(_rf_src), _slot, int_id(_dst_id), call_duration, event_extras(_rssi, _loss)).encode(encoding='utf-8', errors='ignore'))
 
             #
             # Begin in-band signalling for call end. This has nothign to do with routing traffic directly.
@@ -1057,8 +1132,8 @@ class BridgeReportServer(ReportServer):
 
     def send_bridge_event(self, _data):
         # Call sites pass a CSV string; convert to a JSON stream event.
-        # CSV: call_type,action,trx,system,stream_id,peer,src,slot,dst[,duration[,rssi]]
-        # action START/END, or UPDATE: a live mid-call reading (rssi = latest, dBm)
+        # CSV: call_type,action,trx,system,stream_id,peer,src,slot,dst[,duration[,rssi[,loss[,loss_src]]]]
+        # action START/END, or UPDATE: a live mid-call reading (latest rssi, loss so far)
         if isinstance(_data, (bytes, bytearray)):
             _data = _data.decode('utf-8', errors='ignore')
         p = _data.split(',')
@@ -1081,7 +1156,11 @@ class BridgeReportServer(ReportServer):
             if len(p) > 9:
                 event['duration'] = float(p[9])
             if len(p) > 10 and p[10]:
-                event['rssi'] = float(p[10])     # average RX RSSI, dBm
+                event['rssi'] = float(p[10])     # dBm: latest on UPDATE, call average on END
+            if len(p) > 11 and p[11]:
+                event['loss'] = float(p[11])     # voice loss so far / for the call, percent
+            if len(p) > 12 and p[12]:
+                event['loss_src'] = p[12]        # who measured it, if not this core ('c-bridge')
         except (IndexError, ValueError):
             logger.error('(REPORT) malformed bridge event: %s', _data)
             return
