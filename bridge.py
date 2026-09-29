@@ -203,6 +203,78 @@ def index_bridges(_bridges):
     return src_index, by_system
 
 
+# Live routing reload (SIGHUP): re-read rules.py and swap the routing in place, with no
+# restart -- every system stays connected and calls on unaffected talkgroups carry on.
+#
+# Safe because the forwarding path looks routing up from BRIDGE_SRC_INDEX /
+# BRIDGE_BY_SYSTEM on every packet and holds nothing across packets, and everything
+# runs on one asyncio loop: the three globals are replaced between two packets, so a
+# packet sees either the old routing or the new, never a mix.
+#
+# The new rules pass the same checks as at startup (make_bridges / expand_obp_bridges
+# call sys.exit on bad rules; here that is caught). If anything fails, the running
+# routing is kept untouched and the reason logged. Only BRIDGES/OBP_BRIDGES/UNIT are
+# reloaded: systems (hblink.cfg) still need a restart.
+#
+# Runtime state carries over for a member that exists before and after (same bridge,
+# system, slot, TGID and TO_TYPE): ACTIVE, and TIMER -- shortened, never lengthened, if
+# its TIMEOUT changed -- so a part-time talkgroup someone just keyed stays up.
+def load_rules_module(_path):
+    _spec = importlib.util.spec_from_file_location('module.name', _path)
+    _module = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_module)
+    return _module
+
+
+def rebuild_bridges(_rules_module, _old_bridges):
+    _new = make_bridges(expand_obp_bridges(_rules_module.BRIDGES,
+                                           getattr(_rules_module, 'OBP_BRIDGES', {})))
+    _old = {}
+    for _bridge, _members in _old_bridges.items():
+        for _m in _members:
+            _old[(_bridge, _m['SYSTEM'], _m['TS'], _m['TGID'])] = _m
+    _kept = 0
+    _now = time()
+    for _bridge, _members in _new.items():
+        for _m in _members:
+            _o = _old.get((_bridge, _m['SYSTEM'], _m['TS'], _m['TGID']))
+            if _o is None or _o['TO_TYPE'] != _m['TO_TYPE'] or _m['TO_TYPE'] not in ('ON', 'OFF'):
+                continue
+            _m['ACTIVE'] = _o['ACTIVE']
+            if _o['TIMEOUT'] == _m['TIMEOUT']:
+                _m['TIMER'] = _o['TIMER']
+            else:
+                _m['TIMER'] = min(_o['TIMER'], _now + _m['TIMEOUT'])
+            _kept += 1
+    return _new, _kept
+
+
+def reload_rules(_path=None):
+    global BRIDGES, BRIDGE_SRC_INDEX, BRIDGE_BY_SYSTEM, UNIT
+    _path = _path or cli_args.RULES_FILE
+    try:
+        _module = load_rules_module(_path)
+        _new, _kept = rebuild_bridges(_module, BRIDGES)
+        _src, _by = index_bridges(_new)
+        _unit = _module.UNIT
+    except SystemExit as _exc:
+        logger.error('(ROUTER) RULES RELOAD FAILED: %s -- keeping the previous rules', _exc)
+        return False
+    except Exception as _exc:
+        logger.error('(ROUTER) RULES RELOAD FAILED: %s: %s -- keeping the previous rules',
+                     type(_exc).__name__, _exc)
+        return False
+    BRIDGES, BRIDGE_SRC_INDEX, BRIDGE_BY_SYSTEM, UNIT = _new, _src, _by, _unit
+    logger.info('(ROUTER) RULES RELOADED from %s: %s bridges, %s members, %s timers carried over',
+                _path, len(_new), sum(len(_m) for _m in _new.values()), _kept)
+    if report_server is not None:
+        try:
+            report_server.send_bridge()
+        except Exception:
+            pass
+    return True
+
+
 # Run this every minute for rule timer updates
 def rule_timer_loop():
     global UNIT_MAP
@@ -1218,6 +1290,9 @@ if __name__ == '__main__':
             stop_event.set()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, shutdown, sig)
+        # SIGHUP reloads rules.py in place (reload_rules): no restart, nobody dropped.
+        loop.add_signal_handler(signal.SIGHUP, reload_rules)
+        logger.info('(ROUTER) SIGHUP reloads the routing rules without a restart')
 
         # INITIALIZE THE REPORTING LOOP
         if CONFIG['REPORTS']['REPORT']:
