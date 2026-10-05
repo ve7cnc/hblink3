@@ -117,9 +117,11 @@ STREAM_STALE = 300
 def _abs(p):
     return p if os.path.isabs(p) else os.path.join(HERE, p)
 
-# RadioID record fields kept on download (users have fname; repeaters don't; repeaters
-# have color_code, which Trestle's monitor shows for repeaters that do not report one)
-_ID_FIELDS = ('id', 'callsign', 'fname', 'city', 'state', 'country', 'color_code')
+# RadioID record fields kept on download (users have fname; repeaters don't). Repeaters
+# also keep color_code, frequency, offset and trustee: Trestle reads them for its monitor,
+# the Add repeater prefill and callsign verification (trustee = who may manage it).
+_ID_FIELDS = ('id', 'callsign', 'fname', 'city', 'state', 'country', 'color_code',
+              'frequency', 'offset', 'trustee')
 
 def _stream_id_file(url, path, json_key, countries, stale_secs):
     now = time.time()
