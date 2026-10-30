@@ -315,7 +315,7 @@ def rule_timer_loop():
             else:
                 logger.debug('(ROUTER) Conference Bridge NO ACTION: System: %s, Bridge: %s, TS: %s, TGID: %s', _system['SYSTEM'], _bridge, _system['TS'], int_id(_system['TGID']))
 
-    _then = _now - 60
+    _then = _now - CONFIG['GLOBAL'].get('UNIT_TIME', 60)
     remove_list = []
     for unit in UNIT_MAP:
         if UNIT_MAP[unit][1] < (_then):
@@ -419,7 +419,12 @@ class routerOBP(OPENBRIDGE):
         pkt_time = time()
         dmrpkt = _data[20:53]
         _bits = _data[15]
-        
+
+        # A subscriber heard over an OpenBridge in rules.UNIT (a link between our own
+        # servers) is reachable for private calls that way (ve7cnc fork).
+        if self._system in UNIT:
+            UNIT_MAP[_rf_src] = (self.name, pkt_time)
+
         # Is this a new call stream?
         if (_stream_id not in self.STATUS):
             # This is a new call stream
@@ -580,9 +585,15 @@ class routerOBP(OPENBRIDGE):
                 else:
                     self._targets = []
                     logger.error('UNIT call to a subscriber on the same system, send nothing')
-            else:
+            elif CONFIG['GLOBAL'].get('UNIT_FLOOD', True):
                 self._targets = list(UNIT)
                 self._targets.remove(self._system)
+            else:
+                # Not heard within UNIT_TIME: send nowhere rather than tie up a timeslot
+                # on every repeater on the network (ve7cnc fork).
+                self._targets = []
+                logger.info('(%s) UNIT call to %s not forwarded: not heard in the last %ss',
+                            self._system, int_id(_dst_id), CONFIG['GLOBAL'].get('UNIT_TIME', 60))
             
             
             # This is a new call stream, so log & report
@@ -801,8 +812,10 @@ class routerHBP(HBSYSTEM):
         dmrpkt = _data[20:53]
         _bits = _data[15]
         
-        # Make/update an entry in the UNIT_MAP for this subscriber
-        UNIT_MAP[_rf_src] = (self.name, pkt_time)
+        # Make/update an entry in the UNIT_MAP for this subscriber: only where private
+        # calls may be sent (rules.UNIT), or one could be routed to a partner (ve7cnc fork).
+        if self._system in UNIT:
+            UNIT_MAP[_rf_src] = (self.name, pkt_time)
 
         # Is this a new call stream?
         if (_stream_id != self.STATUS[_slot]['RX_STREAM_ID']):
@@ -1056,9 +1069,15 @@ class routerHBP(HBSYSTEM):
                 else:
                     self._targets = []
                     logger.error('UNIT call to a subscriber on the same system, send nothing')
-            else:
+            elif CONFIG['GLOBAL'].get('UNIT_FLOOD', True):
                 self._targets = list(UNIT)
                 self._targets.remove(self._system)
+            else:
+                # Not heard within UNIT_TIME: send nowhere rather than tie up a timeslot
+                # on every repeater on the network (ve7cnc fork).
+                self._targets = []
+                logger.info('(%s) UNIT call to %s not forwarded: not heard in the last %ss',
+                            self._system, int_id(_dst_id), CONFIG['GLOBAL'].get('UNIT_TIME', 60))
             
             # This is a new call stream, so log & report
             self.STATUS[_slot]['RX_START'] = pkt_time

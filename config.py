@@ -143,7 +143,13 @@ def build_config(_config_file):
                     'REG_ACL': config.get(section, 'REG_ACL'),
                     'SUB_ACL': config.get(section, 'SUB_ACL'),
                     'TG1_ACL': config.get(section, 'TGID_TS1_ACL'),
-                    'TG2_ACL': config.get(section, 'TGID_TS2_ACL')
+                    'TG2_ACL': config.get(section, 'TGID_TS2_ACL'),
+                    # Private (unit) calls (ve7cnc fork): how long a subscriber's last-heard
+                    # system is remembered (seconds, from any call on a rules.UNIT system),
+                    # and whether a call to one not heard in that time goes to every UNIT
+                    # system (True, upstream's behaviour) or nowhere (False).
+                    'UNIT_TIME': max(60, config.getint(section, 'UNIT_TIME', fallback=60)),
+                    'UNIT_FLOOD': config.getboolean(section, 'UNIT_FLOOD', fallback=True),
                 })
 
             elif section == 'REPORTS':
