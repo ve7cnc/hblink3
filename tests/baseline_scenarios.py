@@ -161,7 +161,8 @@ def unit_hbp_to_obp_ts2():
 
 
 def unit_obp_to_hbp():
-    w = harness.World({}, unit_systems=[], extra_systems=['OBP-1', 'SERVER-1'])
+    # The ingress OpenBridge must be in rules.UNIT to take a unit call in (ve7cnc fork).
+    w = harness.World({}, unit_systems=['OBP-1'], extra_systems=['OBP-1', 'SERVER-1'])
     w.seed_unit_map(bytes_3(2080), 'SERVER-1')
     _full_unit_call(w, 'OBP-1', rf_src=bytes_3(1234), dst=bytes_3(2080),
                     peer=bytes_4(3129100), slot=1, stream_id=b'\x00\x00\x00\x24')
@@ -169,7 +170,8 @@ def unit_obp_to_hbp():
 
 
 def unit_obp_to_obp():
-    w = harness.World({}, unit_systems=[], extra_systems=['OBP-1', 'OBP-2'])
+    # The ingress OpenBridge must be in rules.UNIT to take a unit call in (ve7cnc fork).
+    w = harness.World({}, unit_systems=['OBP-1'], extra_systems=['OBP-1', 'OBP-2'])
     w.seed_unit_map(bytes_3(2080), 'OBP-2')
     _full_unit_call(w, 'OBP-1', rf_src=bytes_3(1234), dst=bytes_3(2080),
                     peer=bytes_4(3129100), slot=1, stream_id=b'\x00\x00\x00\x25')

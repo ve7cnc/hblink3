@@ -202,7 +202,10 @@ class OPENBRIDGE(asyncio.DatagramProtocol):
                             logger.info('(%s) CALL DROPPED WITH STREAM ID %s FROM SUBSCRIBER %s BY GLOBAL ACL', self._system, int_id(_stream_id), int_id(_rf_src))
                             self._laststrid.append(_stream_id)
                         return
-                    if _slot == 1 and not acl_check(_dst_id, self._CONFIG['GLOBAL']['TG1_ACL']):
+                    # A private (unit) call's destination is a subscriber, not a talkgroup:
+                    # talkgroup ACLs do not apply. Which systems may carry one is rules.UNIT
+                    # (bridge.py checks it on OpenBridge ingress too).
+                    if _slot == 1 and _call_type != 'unit' and not acl_check(_dst_id, self._CONFIG['GLOBAL']['TG1_ACL']):
                         if _stream_id not in self._laststrid:
                             logger.info('(%s) CALL DROPPED WITH STREAM ID %s ON TGID %s BY GLOBAL TS1 ACL', self._system, int_id(_stream_id), int_id(_dst_id))
                             self._laststrid.append(_stream_id)
@@ -213,7 +216,7 @@ class OPENBRIDGE(asyncio.DatagramProtocol):
                             logger.info('(%s) CALL DROPPED WITH STREAM ID %s FROM SUBSCRIBER %s BY SYSTEM ACL', self._system, int_id(_stream_id), int_id(_rf_src))
                             self._laststrid.append(_stream_id)
                         return
-                    if not acl_check(_dst_id, self._config['TG1_ACL']):
+                    if _call_type != 'unit' and not acl_check(_dst_id, self._config['TG1_ACL']):
                         if _stream_id not in self._laststrid:
                             logger.info('(%s) CALL DROPPED WITH STREAM ID %s ON TGID %s BY SYSTEM ACL', self._system, int_id(_stream_id), int_id(_dst_id))
                             self._laststrid.append(_stream_id)

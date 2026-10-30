@@ -651,7 +651,12 @@ class routerOBP(OPENBRIDGE):
         if _call_type == 'group':
             self.group_received(_peer_id, _rf_src, _dst_id, _seq, _slot, _frame_type, _dtype_vseq, _stream_id, _data)
         elif _call_type == 'unit':
-            self.unit_received(_peer_id, _rf_src, _dst_id, _seq, _slot, _frame_type, _dtype_vseq, _stream_id, _data)
+            # Only an OpenBridge listed in rules.UNIT takes private calls in, as on the
+            # server side: the talkgroup ACL no longer stops them (hblink.py).
+            if self._system not in UNIT:
+                logger.debug('(%s) *UNIT CALL NOT FORWARDED* UNIT calling is disabled for this system (INGRESS)', self._system)
+            else:
+                self.unit_received(_peer_id, _rf_src, _dst_id, _seq, _slot, _frame_type, _dtype_vseq, _stream_id, _data)
         elif _call_type == 'vcsbk':
             logger.debug('CSBK recieved, but HBlink does not process them currently')
         else:
@@ -1193,13 +1198,15 @@ class BridgeReportServer(ReportServer):
                 'slot':      int(p[7]),
                 'dst':       int(p[8]),
             }
-            if len(p) > 9:
+            # A START carries nothing after dst but, on a unit call, its target list
+            # (with commas of its own), so the optional fields are read on UPDATE/END only.
+            if len(p) > 9 and p[1] != 'START':
                 event['duration'] = float(p[9])
-            if len(p) > 10 and p[10]:
+            if len(p) > 10 and p[10] and p[1] != 'START':
                 event['rssi'] = float(p[10])     # dBm: latest on UPDATE, call average on END
-            if len(p) > 11 and p[11]:
+            if len(p) > 11 and p[11] and p[1] != 'START':
                 event['loss'] = float(p[11])     # voice loss so far / for the call, percent
-            if len(p) > 12 and p[12]:
+            if len(p) > 12 and p[12] and p[1] != 'START':
                 event['loss_src'] = p[12]        # who measured it, if not this core ('c-bridge')
         except (IndexError, ValueError):
             logger.error('(REPORT) malformed bridge event: %s', _data)
